@@ -1,5 +1,7 @@
 # Pantara-MindCraft Backend - COMPLETE ✅
 
+> Catatan historis V0. Kontrak Adaptive Engine terkini ada di `../docs/03-ADAPTIVE-ENGINE.md`; contoh skor di bawah tidak lagi menjadi aturan keputusan.
+
 ## Setup Selesai
 
 Backend Django REST API untuk Pantara-MindCraft sudah berjalan di **http://localhost:8000**

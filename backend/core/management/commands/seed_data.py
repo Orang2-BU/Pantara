@@ -3,6 +3,7 @@ from core.models import Workspace, Team, Member, MemberRole, WorkProfile, Capaci
 from work.models import Project, Task, TaskComplexity, TaskStatus, Assignment
 from adaptive.services import AdaptiveEngine
 from adaptive.models import AdaptiveAnalysis
+from adaptive.evidence import sync_profile_skills, sync_task_requirements
 
 
 class Command(BaseCommand):
@@ -121,6 +122,10 @@ class Command(BaseCommand):
         )
 
         # Run adaptive analysis on task1
+        for profile in WorkProfile.objects.filter(member__team=team):
+            sync_profile_skills(profile)
+        for task in Task.objects.filter(project=project):
+            sync_task_requirements(task)
         analysis_result = AdaptiveEngine.analyze_task(task1)
         AdaptiveAnalysis.objects.create(
             task=task1,

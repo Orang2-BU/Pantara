@@ -675,6 +675,153 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/employee-skills/:
+    get:
+      operationId: api_employee_skills_list
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmployeeSkill'
+          description: ''
+    post:
+      operationId: api_employee_skills_create
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeSkill'
+          description: ''
+  /api/employee-skills/{id}/:
+    get:
+      operationId: api_employee_skills_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this employee skill.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeSkill'
+          description: ''
+    put:
+      operationId: api_employee_skills_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this employee skill.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EmployeeSkillRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeSkill'
+          description: ''
+    patch:
+      operationId: api_employee_skills_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this employee skill.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedEmployeeSkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedEmployeeSkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedEmployeeSkillRequest'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeSkill'
+          description: ''
+    delete:
+      operationId: api_employee_skills_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this employee skill.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/members/:
     get:
       operationId: api_members_list
@@ -1023,6 +1170,387 @@ paths:
       - cookieAuth: []
       - basicAuth: []
       - {}
+      responses:
+        '204':
+          description: No response body
+  /api/skill-evidence/:
+    get:
+      operationId: api_skill_evidence_list
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SkillEvidence'
+          description: ''
+  /api/skill-evidence/{id}/:
+    get:
+      operationId: api_skill_evidence_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this skill evidence.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillEvidence'
+          description: ''
+  /api/skill-evidence/{id}/confirm/:
+    post:
+      operationId: api_skill_evidence_confirm_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this skill evidence.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillEvidence'
+          description: ''
+  /api/skill-evidence/{id}/review/:
+    patch:
+      operationId: api_skill_evidence_review_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this skill evidence.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillEvidence'
+          description: ''
+  /api/skills/:
+    get:
+      operationId: api_skills_list
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Skill'
+          description: ''
+    post:
+      operationId: api_skills_create
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+          description: ''
+  /api/skills/{id}/:
+    get:
+      operationId: api_skills_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+          format: uuid
+        description: A UUID string identifying this skill.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+          description: ''
+    put:
+      operationId: api_skills_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+          format: uuid
+        description: A UUID string identifying this skill.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SkillRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+          description: ''
+    patch:
+      operationId: api_skills_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+          format: uuid
+        description: A UUID string identifying this skill.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSkillRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSkillRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSkillRequest'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Skill'
+          description: ''
+    delete:
+      operationId: api_skills_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+          format: uuid
+        description: A UUID string identifying this skill.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/task-skill-requirements/:
+    get:
+      operationId: api_task_skill_requirements_list
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskSkillRequirement'
+          description: ''
+    post:
+      operationId: api_task_skill_requirements_create
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSkillRequirement'
+          description: ''
+  /api/task-skill-requirements/{id}/:
+    get:
+      operationId: api_task_skill_requirements_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task skill requirement.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSkillRequirement'
+          description: ''
+    put:
+      operationId: api_task_skill_requirements_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task skill requirement.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskSkillRequirementRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSkillRequirement'
+          description: ''
+    patch:
+      operationId: api_task_skill_requirements_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task skill requirement.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskSkillRequirementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskSkillRequirementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskSkillRequirementRequest'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSkillRequirement'
+          description: ''
+    delete:
+      operationId: api_task_skill_requirements_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task skill requirement.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
       responses:
         '204':
           description: No response body
@@ -2002,6 +2530,60 @@ components:
         * `LOW` - Low
         * `MEDIUM` - Medium
         * `HIGH` - High
+    EmployeeSkill:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        member:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        declared_proficiency:
+          type: string
+          maxLength: 20
+        observed_proficiency:
+          type: string
+          readOnly: true
+        evidence_confidence:
+          type: string
+          readOnly: true
+        declared_at:
+          type: string
+          format: date-time
+          readOnly: true
+        last_evidence_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - declared_at
+      - evidence_confidence
+      - id
+      - last_evidence_at
+      - member
+      - observed_proficiency
+      - skill
+    EmployeeSkillRequest:
+      type: object
+      properties:
+        member:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        declared_proficiency:
+          type: string
+          minLength: 1
+          maxLength: 20
+      required:
+      - member
+      - skill
     LevelEnum:
       enum:
       - AVAILABLE
@@ -2130,6 +2712,19 @@ components:
           format: int64
           description: Hours
         factors: {}
+    PatchedEmployeeSkillRequest:
+      type: object
+      properties:
+        member:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        declared_proficiency:
+          type: string
+          minLength: 1
+          maxLength: 20
     PatchedMemberRequest:
       type: object
       properties:
@@ -2164,6 +2759,17 @@ components:
           type: string
           format: date
           nullable: true
+    PatchedSkillRequest:
+      type: object
+      properties:
+        canonical_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        category:
+          type: string
+          maxLength: 100
+        aliases: {}
     PatchedTaskRequest:
       type: object
       properties:
@@ -2176,6 +2782,10 @@ components:
           maxLength: 255
         description:
           type: string
+        category:
+          type: string
+          maxLength: 100
+        tags: {}
         required_skills: {}
         complexity:
           $ref: '#/components/schemas/ComplexityEnum'
@@ -2198,6 +2808,23 @@ components:
         access_requirements: {}
         status:
           $ref: '#/components/schemas/TaskStatusEnum'
+    PatchedTaskSkillRequirementRequest:
+      type: object
+      properties:
+        task:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        requirement_type:
+          type: string
+          minLength: 1
+          maxLength: 12
+        minimum_proficiency:
+          type: string
+          minLength: 1
+          maxLength: 20
     PatchedTeamRequest:
       type: object
       properties:
@@ -2287,6 +2914,83 @@ components:
         * `TEAM_LEAD` - Team Lead
         * `EMPLOYEE` - Employee
         * `ADMIN` - Admin
+    Skill:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        canonical_name:
+          type: string
+          maxLength: 100
+        category:
+          type: string
+          maxLength: 100
+        aliases: {}
+      required:
+      - canonical_name
+      - id
+    SkillEvidence:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        member:
+          type: string
+          format: uuid
+          readOnly: true
+        skill:
+          type: string
+          format: uuid
+          readOnly: true
+        task:
+          type: string
+          format: uuid
+          readOnly: true
+        usage_level:
+          type: string
+          readOnly: true
+        task_complexity:
+          type: string
+          readOnly: true
+        context_tags:
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+        confirmed_by_employee:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - confirmed_by_employee
+      - context_tags
+      - created_at
+      - id
+      - member
+      - skill
+      - source
+      - task
+      - task_complexity
+      - usage_level
+    SkillRequest:
+      type: object
+      properties:
+        canonical_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        category:
+          type: string
+          maxLength: 100
+        aliases: {}
+      required:
+      - canonical_name
     Task:
       type: object
       properties:
@@ -2302,6 +3006,10 @@ components:
           maxLength: 255
         description:
           type: string
+        category:
+          type: string
+          maxLength: 100
+        tags: {}
         required_skills: {}
         complexity:
           $ref: '#/components/schemas/ComplexityEnum'
@@ -2351,6 +3059,10 @@ components:
           maxLength: 255
         description:
           type: string
+        category:
+          type: string
+          maxLength: 100
+        tags: {}
         required_skills: {}
         complexity:
           $ref: '#/components/schemas/ComplexityEnum'
@@ -2377,6 +3089,48 @@ components:
       - estimated_effort
       - project
       - title
+    TaskSkillRequirement:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        requirement_type:
+          type: string
+          maxLength: 12
+        minimum_proficiency:
+          type: string
+          maxLength: 20
+      required:
+      - id
+      - skill
+      - task
+    TaskSkillRequirementRequest:
+      type: object
+      properties:
+        task:
+          type: string
+          format: uuid
+        skill:
+          type: string
+          format: uuid
+        requirement_type:
+          type: string
+          minLength: 1
+          maxLength: 12
+        minimum_proficiency:
+          type: string
+          minLength: 1
+          maxLength: 20
+      required:
+      - skill
+      - task
     TaskStatusEnum:
       enum:
       - PENDING

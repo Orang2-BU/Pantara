@@ -7,6 +7,7 @@ from core.serializers import (
     WorkProfileSerializer, CapacitySignalSerializer
 )
 from adaptive.services import AdaptiveEngine
+from adaptive.evidence import sync_profile_skills
 
 
 class WorkspaceViewSet(viewsets.ModelViewSet):
@@ -52,10 +53,13 @@ class WorkProfileViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         profile = serializer.save()
+        sync_profile_skills(profile)
         AdaptiveEngine.refresh_team(profile.member.team, 'profile_changed')
 
     def perform_update(self, serializer):
         profile = serializer.save()
+        if 'skills' in serializer.validated_data:
+            sync_profile_skills(profile)
         AdaptiveEngine.refresh_team(profile.member.team, 'profile_changed')
 
 

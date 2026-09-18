@@ -21,7 +21,8 @@ from work.views import (
     BlockerViewSet,
     CompletionEvidenceViewSet,
 )
-from adaptive.views import AdaptiveAnalysisViewSet
+from adaptive.views import (AdaptiveAnalysisViewSet, EmployeeSkillViewSet, SkillViewSet,
+                            SkillEvidenceViewSet, TaskSkillRequirementViewSet)
 
 router = DefaultRouter()
 router.register(r'workspaces', WorkspaceViewSet)
@@ -35,6 +36,10 @@ router.register(r'assignments', AssignmentViewSet)
 router.register(r'blockers', BlockerViewSet)
 router.register(r'completion-evidences', CompletionEvidenceViewSet)
 router.register(r'adaptive-analyses', AdaptiveAnalysisViewSet)
+router.register(r'skills', SkillViewSet)
+router.register(r'employee-skills', EmployeeSkillViewSet)
+router.register(r'task-skill-requirements', TaskSkillRequirementViewSet)
+router.register(r'skill-evidence', SkillEvidenceViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

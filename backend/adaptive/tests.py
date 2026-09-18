@@ -1,9 +1,14 @@
 from datetime import date, timedelta
 
 from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from adaptive.services import AdaptiveEngine, task_load
+from adaptive.evidence import evaluate_evidence, resolve_skill, sync_profile_skills, sync_task_requirements
+from adaptive.models import EmployeeSkill, SkillEvidence
 from core.models import CapacitySignal, Member, Team, WorkProfile, Workspace
 from work.models import Assignment, CompletionEvidence, Project, Task, TaskStatus
 
@@ -252,3 +257,107 @@ class AdaptiveEngineTests(TestCase):
         self.task.project.workspace.save()
         result = AdaptiveEngine.calculate_access(self.task, profile, ['captions'])
         self.assertEqual(result['readiness'], 'READY')
+
+    def test_catalog_alias_and_unknown_skill_review(self):
+        self.assertEqual(resolve_skill('React').id, resolve_skill('React.js').id)
+        self.assertEqual(resolve_skill('ReactJS').id, resolve_skill('react').id)
+        response = APIClient().patch(f'/api/tasks/{self.task.id}/',
+                                     {'required_skills': ['UnknownFutureSkill']}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('UNRESOLVED_SKILL', str(response.data))
+
+    def test_cold_start_and_conflicting_proficiency(self):
+        self.task.required_skills = [{'skill': 'React', 'priority': 'MANDATORY', 'min_level': 'ADVANCED'}]
+        self.task.save()
+        sync_task_requirements(self.task)
+        profile = self.strong.work_profile
+        profile.skills = [{'skill': 'React', 'level': 'ADVANCED'}]
+        profile.save()
+        sync_profile_skills(profile)
+        result = AdaptiveEngine.calculate_capability(self.task, profile, [])
+        self.assertEqual(result['status'], 'ELIGIBLE')
+        self.assertEqual(result['confidence'], 'LOW')
+        self.assertIn('SELF_DECLARED_ONLY', result['reason_codes'])
+        skill = EmployeeSkill.objects.get(member=self.strong, skill=resolve_skill('React'))
+        skill.observed_proficiency = 'INTERMEDIATE'
+        skill.evidence_confidence = 'HIGH'
+        skill.last_evidence_at = timezone.now()
+        skill.save()
+        result = AdaptiveEngine.calculate_capability(self.task, profile, [])
+        self.assertEqual(result['status'], 'REVIEW_REQUIRED')
+        self.assertIn('MIXED_PROFICIENCY_EVIDENCE', result['reason_codes'])
+        self.assertEqual(skill.declared_proficiency, 'ADVANCED')
+
+    def test_completion_proposes_then_confirmation_updates_observation(self):
+        sync_task_requirements(self.task)
+        profile = self.strong.work_profile
+        profile.skills = [{'skill': 'React', 'level': 'ADVANCED'}, 'TypeScript']
+        profile.save()
+        sync_profile_skills(profile)
+        Assignment.objects.create(task=self.task, member=self.strong, reason='assigned')
+        response = APIClient().post(f'/api/tasks/{self.task.id}/complete/', {
+            'task': str(self.task.id), 'estimated_effort': 8, 'actual_effort': 10,
+            'factors': ['dependency_delay'],
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        proposed = SkillEvidence.objects.get(member=self.strong, task=self.task, skill=resolve_skill('React'))
+        self.assertFalse(proposed.confirmed_by_employee)
+        user = get_user_model().objects.create_user(username='strong', email=self.strong.email, password='x')
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post(f'/api/skill-evidence/{proposed.id}/confirm/')
+        self.assertEqual(response.status_code, 200)
+        proposed.refresh_from_db()
+        self.assertTrue(proposed.confirmed_by_employee)
+        employee_skill = EmployeeSkill.objects.get(member=self.strong, skill=proposed.skill)
+        self.assertEqual(employee_skill.observed_proficiency, 'INTERMEDIATE')
+        self.assertEqual(employee_skill.evidence_confidence, 'LOW')
+        self.assertEqual(employee_skill.declared_proficiency, 'ADVANCED')
+        self.assertEqual(employee_skill.last_evidence_at, proposed.created_at)
+
+    def test_familiarity_uses_task_context_and_provenance(self):
+        old = Task.objects.create(project=self.project, title='Checkout UI',
+                                  required_skills=['React'], category='frontend', tags=['checkout', 'payment'],
+                                  estimated_effort=5, status=TaskStatus.COMPLETED)
+        Assignment.objects.create(task=old, member=self.strong, reason='worked')
+        CompletionEvidence.objects.create(task=old, estimated_effort=5, actual_effort=7)
+        self.task.category = 'frontend'
+        self.task.tags = ['checkout']
+        self.task.save()
+        result = AdaptiveEngine.calculate_capability(self.task, self.strong.work_profile)
+        self.assertEqual(result['task_familiarity']['level'], 'MODERATE')
+        self.assertEqual(result['relevant_experience_result']['evidence_task_ids'], [str(old.id)])
+
+    def test_evidence_pattern_and_employee_review_permission(self):
+        skill = resolve_skill('React')
+        records = []
+        for index, tag in enumerate(['checkout', 'payment', 'dashboard']):
+            task = Task.objects.create(project=self.project, title=f'High task {index}',
+                                       estimated_effort=4, complexity='HIGH')
+            records.append(SkillEvidence.objects.create(
+                member=self.strong, skill=skill, task=task, task_complexity='HIGH',
+                context_tags=[tag], confirmed_by_employee=index < 2,
+            ))
+        result = evaluate_evidence(records)
+        self.assertEqual(result['observed_proficiency'], 'ADVANCED')
+        self.assertEqual(result['evidence_confidence'], 'MEDIUM')
+        self.assertEqual(result['evidence_count'], 2)
+        self.assertEqual(result['strong_evidence_count'], 2)
+        stranger = get_user_model().objects.create_user(username='stranger', email='other@example.com', password='x')
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+        self.assertEqual(client.post(f'/api/skill-evidence/{records[2].id}/confirm/').status_code, 404)
+        owner = get_user_model().objects.create_user(username='owner', email=self.strong.email, password='x')
+        client.force_authenticate(user=owner)
+        self.assertEqual(client.patch(f'/api/skill-evidence/{records[2].id}/review/',
+                                      {'usage_level': 'MINOR', 'context_tags': ['dependency_delay']},
+                                      format='json').status_code, 200)
+        self.assertEqual(client.post(f'/api/skill-evidence/{records[2].id}/confirm/').status_code, 200)
+        self.assertEqual(EmployeeSkill.objects.get(member=self.strong, skill=skill).declared_proficiency, 'BEGINNER')
+
+    def test_seed_data_populates_relational_capability(self):
+        call_command('seed_data', verbosity=0)
+        task = Task.objects.get(title='Implement Adaptive Workload Engine')
+        self.assertEqual(task.skill_requirements.count(), 3)
+        self.assertTrue(EmployeeSkill.objects.filter(member__name__contains='Budi').exists())
+        self.assertIn('recommended_member_id', AdaptiveEngine.analyze_task(task)['recommendation'])

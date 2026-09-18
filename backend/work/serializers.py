@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from work.models import Project, Task, Assignment, Blocker, CompletionEvidence
+from adaptive.evidence import resolve_skill
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -10,10 +11,26 @@ class ProjectSerializer(serializers.ModelSerializer):
 
 
 class TaskSerializer(serializers.ModelSerializer):
+    def validate_required_skills(self, values):
+        if not isinstance(values, list):
+            raise serializers.ValidationError('Expected a list of requirements.')
+        for value in values:
+            name = value if isinstance(value, str) else value.get('skill') if isinstance(value, dict) else None
+            if not isinstance(name, str) or resolve_skill(name) is None:
+                raise serializers.ValidationError(f'UNRESOLVED_SKILL: {name}')
+            if isinstance(value, dict) and (
+                str(value.get('priority', 'REQUIRED')).upper() not in {'MANDATORY', 'REQUIRED', 'PREFERRED'}
+                or str(value.get('min_level', 'INTERMEDIATE')).upper() not in {
+                    'BEGINNER', 'INTERMEDIATE', 'ADVANCED', 'EXPERT'
+                }
+            ):
+                raise serializers.ValidationError('Invalid priority or minimum proficiency.')
+        return values
+
     class Meta:
         model = Task
         fields = [
-            'id', 'project', 'title', 'description', 'required_skills',
+            'id', 'project', 'title', 'description', 'category', 'tags', 'required_skills',
             'complexity', 'estimated_effort', 'progress', 'deadline', 'access_requirements',
             'status', 'created_at', 'updated_at'
         ]

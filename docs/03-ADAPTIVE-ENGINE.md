@@ -49,6 +49,16 @@ Simpan estimated vs actual effort, blocker context, capacity signal, dan outcome
 - Recommendation: kandidat dengan skill dan access viable dibandingkan berdasarkan capacity, lalu capability dan riwayat. Over-capacity memerlukan review. Tanpa kandidat viable, API tidak memberikan `recommended_member_id`.
 - Analisis ulang: perubahan task, assignment, blocker, completion evidence, profil, kapasitas, atau dukungan workspace memperbarui snapshot analisis untuk task terbuka. `recommendation.trigger` dan `changed_from_previous` menunjukkan perubahan; perpindahan assignment tetap keputusan manusia.
 
+## Capability evidence layer
+
+- `Skill` menyimpan nama kanonis dan alias. Migrasi mengimpor skill dari data lama. Skill baru harus ditambahkan ke katalog oleh admin; API task/profile mengembalikan `UNRESOLVED_SKILL` untuk nama yang belum ada.
+- `EmployeeSkill` menyimpan proficiency yang dinyatakan employee secara terpisah dari hasil observasi dan confidence. `TaskSkillRequirement` menyimpan prioritas dan minimum proficiency per skill. Edit lewat API baru juga memperbarui field JSON lama.
+- Saat task selesai, requirement pada assignment terbaru menjadi usulan `SkillEvidence`. Employee yang login dengan email yang sama dapat mengedit usage/context melalui `PATCH /api/skill-evidence/{id}/review/`, lalu menyetujui melalui `POST /api/skill-evidence/{id}/confirm/`. Bukti yang belum dikonfirmasi tidak mengubah observed proficiency.
+- Evaluator deterministik memakai bukti terkonfirmasi dari 365 hari terakhir. Dua penggunaan utama pada task kompleks menghasilkan `ADVANCED`; tiga penggunaan utama dengan minimal dua konteks menghasilkan confidence `HIGH`. Bukti completion tidak menaikkan proficiency secara otomatis satu tingkat per task. Declared proficiency tidak ditimpa.
+- Capability menghasilkan `status`, `confidence`, `skill_match`, `relevant_experience_result`, dan `task_familiarity` dengan ID task sumber. Task familiarity membandingkan skill, category, dan tags dari task selesai; tanpa riwayat hasilnya `UNKNOWN`.
+
+Admin mengelola katalog di `/api/skills/` atau Django admin. Employee mengelola deklarasi skill di `/api/employee-skills/`. Admin mengelola requirement di `/api/task-skill-requirements/`. Jalankan `python manage.py migrate` setelah update.
+
 `progress` adalah persentase 0–100 pada Task. `access_support` adalah daftar dukungan tersedia pada Workspace. Riwayat analisis dapat dibaca di `/api/adaptive-analyses/`.
 
 ## AI boundary

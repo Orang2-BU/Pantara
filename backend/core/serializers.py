@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from core.models import Workspace, Team, Member, WorkProfile, CapacitySignal
+from adaptive.evidence import resolve_skill
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):
@@ -17,6 +18,19 @@ class TeamSerializer(serializers.ModelSerializer):
 
 
 class WorkProfileSerializer(serializers.ModelSerializer):
+    def validate_skills(self, values):
+        if not isinstance(values, list):
+            raise serializers.ValidationError('Expected a list of skills.')
+        for value in values:
+            name = value if isinstance(value, str) else value.get('skill') if isinstance(value, dict) else None
+            if not isinstance(name, str) or resolve_skill(name) is None:
+                raise serializers.ValidationError(f'UNRESOLVED_SKILL: {name}')
+            if isinstance(value, dict) and str(value.get('level', 'INTERMEDIATE')).upper() not in {
+                'BEGINNER', 'INTERMEDIATE', 'ADVANCED', 'EXPERT'
+            }:
+                raise serializers.ValidationError('Invalid proficiency level.')
+        return values
+
     class Meta:
         model = WorkProfile
         fields = ['id', 'member', 'skills', 'experience', 'access_preferences', 'access_needs', 'updated_at']

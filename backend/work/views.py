@@ -9,6 +9,7 @@ from work.serializers import (
     BlockerSerializer, CompletionEvidenceSerializer
 )
 from adaptive.services import AdaptiveEngine
+from adaptive.evidence import propose_task_evidence, sync_task_requirements
 from adaptive.serializers import AdaptiveAnalysisSerializer
 
 
@@ -23,10 +24,15 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         task = serializer.save()
+        sync_task_requirements(task)
         AdaptiveEngine.refresh_team(task.project.team, 'task_created')
 
     def perform_update(self, serializer):
         task = serializer.save()
+        if 'required_skills' in serializer.validated_data:
+            sync_task_requirements(task)
+        if task.status == 'COMPLETED' and hasattr(task, 'completion_evidence'):
+            propose_task_evidence(task)
         AdaptiveEngine.refresh_team(task.project.team, 'task_updated')
 
     def perform_destroy(self, instance):
@@ -78,6 +84,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                 task.status = 'COMPLETED'
                 task.progress = 100
                 task.save()
+                propose_task_evidence(task)
             AdaptiveEngine.refresh_team(task.project.team, 'task_completed')
             return Response(CompletionEvidenceSerializer(evidence).data, status=status.HTTP_201_CREATED)
 
@@ -131,6 +138,8 @@ class CompletionEvidenceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         evidence = serializer.save()
+        if evidence.task.status == 'COMPLETED':
+            propose_task_evidence(evidence.task)
         AdaptiveEngine.refresh_team(evidence.task.project.team, 'completion_evidence')
 
     def perform_update(self, serializer):

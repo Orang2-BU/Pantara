@@ -33,6 +33,8 @@ class Task(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='tasks')
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    category = models.CharField(max_length=100, blank=True)
+    tags = models.JSONField(default=list)
     required_skills = models.JSONField(default=list)  # list of str
     complexity = models.CharField(max_length=10, choices=TaskComplexity.choices, default=TaskComplexity.MEDIUM)
     estimated_effort = models.IntegerField(help_text='Hours')
