@@ -19,7 +19,7 @@ class TeamSerializer(serializers.ModelSerializer):
 class WorkProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkProfile
-        fields = ['id', 'member', 'skills', 'experience', 'access_preferences', 'updated_at']
+        fields = ['id', 'member', 'skills', 'experience', 'access_preferences', 'access_needs', 'updated_at']
         read_only_fields = ['id', 'updated_at']
 
 

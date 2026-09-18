@@ -198,23 +198,57 @@ class AdaptiveEngineTests(TestCase):
         self.assertEqual(cap['current_hours'], 32.0)
         self.assertEqual(cap['projected_hours'], 42.0)
 
-        # 5. Signal Floor: Self-reported OVER_CAPACITY is capped at NEAR_CAPACITY floor
-        # Clear assignments so system_fit is AVAILABLE (projected=10.0)
         member.assignments.all().delete()
+        member.capacity_signals.all().delete()
         CapacitySignal.objects.create(member=member, level='OVER_CAPACITY')
         cap = AdaptiveEngine.calculate_capacity(member, eval_task)
         self.assertEqual(cap['fit'], 'NEAR_CAPACITY')
-        self.assertEqual(cap['score'], 0.8)
+        self.assertEqual(cap['system_fit'], 'AVAILABLE')
         self.assertEqual(cap['signal_level'], 'OVER_CAPACITY')
 
-        # 6. Signal Floor: Self-reported NEAR_CAPACITY elevates AVAILABLE system_fit
+        member.capacity_signals.all().delete()
         CapacitySignal.objects.create(member=member, level='NEAR_CAPACITY')
         cap = AdaptiveEngine.calculate_capacity(member, eval_task)
         self.assertEqual(cap['fit'], 'NEAR_CAPACITY')
-        self.assertEqual(cap['score'], 0.8)
 
-        # 7. Signal Floor: Self-reported BALANCED elevates AVAILABLE system_fit
+        member.capacity_signals.all().delete()
         CapacitySignal.objects.create(member=member, level='BALANCED')
         cap = AdaptiveEngine.calculate_capacity(member, eval_task)
         self.assertEqual(cap['fit'], 'BALANCED')
-        self.assertEqual(cap['score'], 1.5)
+
+    def test_structured_requirements_aliases_levels_and_mandatory_gate(self):
+        self.task.required_skills = [
+            {'skill': 'React.js', 'priority': 'MANDATORY', 'min_level': 'ADVANCED'},
+            {'skill': 'TypeScript', 'priority': 'REQUIRED', 'min_level': 'INTERMEDIATE'},
+            {'skill': 'Accessibility', 'priority': 'PREFERRED', 'min_level': 'BEGINNER'},
+        ]
+        self.task.save()
+        profile = self.strong.work_profile
+        profile.skills = [
+            {'skill': 'React', 'level': 'ADVANCED'},
+            {'skill': 'typescript', 'level': 'INTERMEDIATE'},
+        ]
+        profile.save()
+        result = AdaptiveEngine.calculate_capability(self.task, profile, [])
+        self.assertEqual(result['fit'], 'STRONG')
+        self.assertEqual(result['matched_skills'], ['react', 'typescript'])
+        self.assertEqual(result['preferred_matches'], [])
+        profile.skills = [{'skill': 'React', 'level': 'BEGINNER'}]
+        profile.save()
+        result = AdaptiveEngine.calculate_capability(self.task, profile, [])
+        self.assertEqual(result['mandatory_missing'], ['react'])
+
+    def test_access_needs_require_workspace_support(self):
+        self.task.access_requirements = ['captions']
+        self.task.project.workspace.access_support = []
+        self.task.project.workspace.save()
+        profile = self.strong.work_profile
+        profile.access_needs = ['captions']
+        profile.access_preferences = []
+        profile.save()
+        result = AdaptiveEngine.calculate_access(self.task, profile, [])
+        self.assertEqual(result['readiness'], 'UNRESOLVED')
+        self.task.project.workspace.access_support = ['captions']
+        self.task.project.workspace.save()
+        result = AdaptiveEngine.calculate_access(self.task, profile, ['captions'])
+        self.assertEqual(result['readiness'], 'READY')

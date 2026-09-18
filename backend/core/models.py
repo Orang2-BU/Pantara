@@ -41,7 +41,7 @@ class Member(models.Model):
 
     @property
     def latest_capacity_signal(self):
-        signal = self.capacity_signals.order_by('-created_at').first()
+        signal = self.capacity_signals.order_by('-created_at', '-id').first()
         return signal.level if signal else CapacityLevel.BALANCED
 
 
@@ -51,6 +51,7 @@ class WorkProfile(models.Model):
     skills = models.JSONField(default=list)  # list of str e.g. ["Python", "Django"]
     experience = models.JSONField(default=list)  # list of dicts e.g. [{"skill": "Python", "level": "Strong"}]
     access_preferences = models.JSONField(default=list)  # list of str e.g. ["Flexible Hours", "Screen Reader"]
+    access_needs = models.JSONField(default=list)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

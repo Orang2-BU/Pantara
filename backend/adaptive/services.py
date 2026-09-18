@@ -6,6 +6,40 @@ from core.models import CapacityLevel, CapacitySignal, WorkProfile
 from work.models import Assignment, TaskStatus
 from adaptive.models import AccessReadiness, AdaptiveAnalysis, CapabilityFit, CapacityFit
 
+SKILL_ALIASES = {'reactjs': 'react', 'react.js': 'react', 'react-js': 'react', 'ts': 'typescript', 'py': 'python'}
+LEVELS = {'BEGINNER': 1, 'INTERMEDIATE': 2, 'ADVANCED': 3, 'EXPERT': 4, 'UNKNOWN': 0}
+
+
+def _skill(value):
+    value = value.casefold().strip()
+    return SKILL_ALIASES.get(value, value)
+
+
+def _entries(values, default_level='INTERMEDIATE'):
+    result = []
+    for value in values or []:
+        if isinstance(value, str):
+            result.append((_skill(value), default_level))
+        elif isinstance(value, dict) and value.get('skill'):
+            result.append((_skill(value['skill']), str(value.get('level', default_level)).upper()))
+    return result
+
+
+def _requirements(values):
+    result = []
+    for value in values or []:
+        if not isinstance(value, str) and not isinstance(value, dict):
+            continue
+        skill = value if isinstance(value, str) else value.get('skill')
+        if not skill:
+            continue
+        priority = 'REQUIRED' if isinstance(value, str) else str(value.get('priority', 'REQUIRED')).upper()
+        min_level = 'INTERMEDIATE' if isinstance(value, str) else str(value.get('min_level', 'INTERMEDIATE')).upper()
+        result.append({'skill': _skill(skill),
+                       'priority': priority if priority in {'MANDATORY', 'REQUIRED', 'PREFERRED'} else 'REQUIRED',
+                       'min_level': min_level if min_level in LEVELS else 'INTERMEDIATE'})
+    return result
+
 
 def task_load(task):
     if task.status == TaskStatus.COMPLETED:
@@ -19,12 +53,18 @@ def task_load(task):
 class AdaptiveEngine:
     @staticmethod
     def calculate_capability(task, profile, completed_assignments=None):
-        required = {s.casefold() for s in task.required_skills}
-        skills = {s.casefold() for s in profile.skills} if profile else set()
-        matched = sorted(required & skills)
-        missing = sorted(required - skills)
+        requirements = _requirements(task.required_skills)
+        skill_levels = {skill: level for skill, level in _entries(profile.skills if profile else [])}
+        required = {r['skill'] for r in requirements if r['priority'] != 'PREFERRED'}
+        matched = sorted(r['skill'] for r in requirements if r['priority'] != 'PREFERRED'
+                         and LEVELS.get(skill_levels.get(r['skill'], 'UNKNOWN'), 0) >= LEVELS[r['min_level']])
+        missing = sorted(required - set(matched))
         ratio = len(matched) / len(required) if required else 1.0
-        experience = {e.get('skill', '').casefold() for e in (profile.experience if profile else []) if isinstance(e, dict)}
+        mandatory = {r['skill'] for r in requirements if r['priority'] == 'MANDATORY'}
+        mandatory_missing = sorted(mandatory - set(matched))
+        preferred = sorted(r['skill'] for r in requirements if r['priority'] == 'PREFERRED'
+                           and LEVELS.get(skill_levels.get(r['skill'], 'UNKNOWN'), 0) >= LEVELS[r['min_level']])
+        experience = {_skill(e.get('skill', '')) for e in (profile.experience if profile else []) if isinstance(e, dict)}
         relevant_experience = sorted(required & experience)
         if completed_assignments is None:
             if profile and getattr(profile, 'member', None):
@@ -35,15 +75,18 @@ class AdaptiveEngine:
                 completed_assignments = list(previous)
             else:
                 completed_assignments = []
-        similar = sum(bool(required & {s.casefold() for s in a.task.required_skills}) for a in completed_assignments)
-        fit = CapabilityFit.STRONG if ratio == 1 else CapabilityFit.PARTIAL if ratio >= 0.5 else CapabilityFit.LIMITED
+        similar = sum(bool(required & {_skill(s.get('skill', s)) if isinstance(s, dict) else _skill(s)
+                                     for s in a.task.required_skills}) for a in completed_assignments)
+        fit = CapabilityFit.STRONG if not missing else CapabilityFit.PARTIAL if ratio >= 0.5 else CapabilityFit.LIMITED
         return {
             'fit': fit, 'score': 2.0 if ratio == 1 else 1.0 if ratio >= 0.5 else 0.0,
             'required_match': round(ratio, 2), 'matched_skills': matched,
             'missing_skills': missing, 'relevant_experience': relevant_experience,
+            'mandatory_missing': mandatory_missing, 'preferred_matches': preferred,
             'similar_completed_tasks': similar,
             'evidence': f'{len(matched)}/{len(required)} required skills matched; {len(relevant_experience)} experience records; {similar} relevant completed tasks.',
             'reason_codes': (['REQUIRED_SKILLS_MATCH'] if not missing else ['MISSING_REQUIRED_SKILLS'])
+                            + (['MANDATORY_REQUIREMENT_MISSING'] if mandatory_missing else [])
                             + (['RELEVANT_EXPERIENCE'] if relevant_experience else [])
                             + (['SIMILAR_TASK_HISTORY'] if similar else []),
         }
@@ -72,8 +115,9 @@ class AdaptiveEngine:
         score = {CapacityFit.AVAILABLE: 2.0, CapacityFit.BALANCED: 1.5,
                  CapacityFit.NEAR_CAPACITY: 0.8, CapacityFit.OVER_CAPACITY: 0.0}[fit]
         return {
-            'fit': fit, 'score': score, 'current_hours': current,
-            'projected_hours': projected, 'signal_level': signal,
+            'fit': fit, 'system_fit': system_fit, 'score': score, 'current_hours': current,
+            'projected_hours': projected, 'weighted_workload_units': projected,
+            'current_workload_units': current, 'signal_level': signal,
             'active_tasks_count': len(active_tasks),
             'evidence': f'{len(active_tasks)} active tasks; {current} weighted hours now, {projected} if assigned; self-report: {signal}.',
             'reason_codes': ['CAPACITY_' + fit],
@@ -85,16 +129,19 @@ class AdaptiveEngine:
             workspace = getattr(getattr(task, 'project', None), 'workspace', None)
             workspace_support = workspace.access_support if workspace else []
 
-        required = {item.casefold() for item in task.access_requirements}
-        preferences = {item.casefold() for item in (profile.access_preferences if profile else [])}
-        support = {item.casefold() for item in workspace_support}
-        ready = sorted(required & (preferences | support))
-        unmet = sorted(required - (preferences | support))
+        required = {_skill(item) for item in task.access_requirements}
+        explicit_needs = bool(getattr(profile, 'access_needs', []) if profile else [])
+        needs = {_skill(item) for item in (profile.access_needs if explicit_needs else [])}
+        legacy_support = {_skill(item) for item in (profile.access_preferences if profile else [])}
+        support = {_skill(item) for item in workspace_support}
+        available = support if explicit_needs else (legacy_support | support)
+        ready = sorted(required & available)
+        unmet = sorted(required - available)
         readiness = (AccessReadiness.READY if not unmet else
                      AccessReadiness.NEEDS_SUPPORT if ready else AccessReadiness.UNRESOLVED)
         return {
             'readiness': readiness, 'score': 2.0 if readiness == AccessReadiness.READY else 1.0 if ready else 0.0,
-            'matched_preferences': sorted(required & preferences),
+            'employee_needs': sorted(needs), 'matched_preferences': sorted(required & (needs or legacy_support)),
             'workplace_support': sorted(required & support), 'unmet_preferences': unmet,
             'evidence': f'Available: {", ".join(ready) or "none"}; needs review: {", ".join(unmet) or "none"}.',
             'reason_codes': ['ACCESS_READY' if not unmet else 'ACCESS_REVIEW_REQUIRED'],
@@ -126,7 +173,7 @@ class AdaptiveEngine:
         for a in active_qs:
             active_by_member[a.member_id].append(a)
 
-        signals = CapacitySignal.objects.filter(member_id__in=member_ids).order_by('member_id', '-created_at')
+        signals = CapacitySignal.objects.filter(member_id__in=member_ids).order_by('member_id', '-created_at', '-id')
         signals_by_member = {}
         for s in signals:
             if s.member_id not in signals_by_member:
@@ -162,17 +209,20 @@ class AdaptiveEngine:
             capability = cls.calculate_capability(task, profile, completed_assignments) if profile else {
                 'fit': CapabilityFit.LIMITED, 'score': 0.0, 'required_match': 0.0,
                 'matched_skills': [], 'missing_skills': task.required_skills,
-                'relevant_experience': [], 'similar_completed_tasks': 0,
+                'relevant_experience': [], 'mandatory_missing': task.required_skills,
+                'preferred_matches': [], 'similar_completed_tasks': 0,
                 'evidence': 'Work profile missing.', 'reason_codes': ['PROFILE_MISSING'],
             }
             capacity = cls.calculate_capacity(member, task, active_assignments, signal_level)
             access = cls.calculate_access(task, profile, workspace_support) if profile else {
                 'readiness': AccessReadiness.UNRESOLVED, 'score': 0.0,
-                'matched_preferences': [], 'workplace_support': [],
+                'employee_needs': [], 'matched_preferences': [], 'workplace_support': [],
                 'unmet_preferences': task.access_requirements,
                 'evidence': 'Work profile missing.', 'reason_codes': ['PROFILE_MISSING'],
             }
-            viable = capability['required_match'] >= 0.5 and access['readiness'] == AccessReadiness.READY
+            viable = (capability['required_match'] >= 0.5
+                      and not capability.get('mandatory_missing')
+                      and access['readiness'] == AccessReadiness.READY)
             candidates.append({
                 'member_id': str(member.id), 'member_name': member.name, 'role': member.role,
                 'total_score': round(capability['score'] + capacity['score'], 2),

@@ -43,9 +43,9 @@ Simpan estimated vs actual effort, blocker context, capacity signal, dan outcome
 
 ## Implementasi backend saat ini
 
-- Capability: minimal 50% required skills untuk kandidat viable; tugas selesai dengan skill yang sama menjadi evidence relevan, tanpa penalti dari actual effort.
-- Capacity: sisa `estimated_effort × (1 - progress/100) × complexity × deadline pressure` untuk task aktif. Modifier complexity: 0.8/1.0/1.3; deadline ≤7 hari: 1.2, <3 hari: 1.5. Batas weighted hours 15/30/40 dan self-report dipakai sebagai evidence; sinyal over-capacity sendiri tidak otomatis menghasilkan skor nol, tetapi menandai perlunya review. Semua angka adalah heuristik demo yang perlu kalibrasi.
-- Access: kebutuhan task dicocokkan dengan preferensi member dan `workspace.access_support`. Kebutuhan yang belum terpenuhi memerlukan review; capability tetap dihitung terpisah.
+- Capability: menerima string lama dan format V1 `{skill, priority, min_level}`. Alias seperti `React.js` dinormalisasi ke `react`; proficiency memakai `BEGINNER` sampai `EXPERT`. Mandatory requirement yang gagal menjadi gate. Riwayat tugas menjadi evidence relevan tanpa penalti actual effort.
+- Capacity: menyimpan `system_fit`, `signal_level`, dan `weighted_workload_units` secara terpisah. Sinyal employee dapat menaikkan status review tanpa mengubah observasi sistem. Load memakai sisa effort, kompleksitas, dan deadline; angka tetap heuristik demo yang perlu kalibrasi.
+- Access: `Task.access_requirements` adalah kondisi task, `WorkProfile.access_needs` kebutuhan employee, dan `Workspace.access_support` dukungan tersedia. `access_preferences` lama tetap dibaca untuk kompatibilitas.
 - Recommendation: kandidat dengan skill dan access viable dibandingkan berdasarkan capacity, lalu capability dan riwayat. Over-capacity memerlukan review. Tanpa kandidat viable, API tidak memberikan `recommended_member_id`.
 - Analisis ulang: perubahan task, assignment, blocker, completion evidence, profil, kapasitas, atau dukungan workspace memperbarui snapshot analisis untuk task terbuka. `recommendation.trigger` dan `changed_from_previous` menunjukkan perubahan; perpindahan assignment tetap keputusan manusia.
 

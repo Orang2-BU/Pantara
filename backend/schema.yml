@@ -2217,6 +2217,7 @@ components:
         skills: {}
         experience: {}
         access_preferences: {}
+        access_needs: {}
     PatchedWorkspaceRequest:
       type: object
       properties:
@@ -2450,6 +2451,7 @@ components:
         skills: {}
         experience: {}
         access_preferences: {}
+        access_needs: {}
         updated_at:
           type: string
           format: date-time
@@ -2467,6 +2469,7 @@ components:
         skills: {}
         experience: {}
         access_preferences: {}
+        access_needs: {}
       required:
       - member
     Workspace:
