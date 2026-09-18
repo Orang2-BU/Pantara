@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from core.models import CapacityLevel, WorkProfile
+from core.models import CapacityLevel, CapacitySignal, WorkProfile
 from work.models import Assignment, TaskStatus
 from adaptive.models import AccessReadiness, AdaptiveAnalysis, CapabilityFit, CapacityFit
 
@@ -18,19 +18,24 @@ def task_load(task):
 
 class AdaptiveEngine:
     @staticmethod
-    def calculate_capability(task, profile):
-        required = {skill.casefold() for skill in task.required_skills}
-        skills = {skill.casefold() for skill in profile.skills}
+    def calculate_capability(task, profile, completed_assignments=None):
+        required = {s.casefold() for s in task.required_skills}
+        skills = {s.casefold() for s in profile.skills} if profile else set()
         matched = sorted(required & skills)
         missing = sorted(required - skills)
         ratio = len(matched) / len(required) if required else 1.0
-        experience = {e.get('skill', '').casefold() for e in profile.experience if isinstance(e, dict)}
+        experience = {e.get('skill', '').casefold() for e in (profile.experience if profile else []) if isinstance(e, dict)}
         relevant_experience = sorted(required & experience)
-        previous = Assignment.objects.filter(
-            member=profile.member, task__status=TaskStatus.COMPLETED,
-            task__completion_evidence__isnull=False,
-        ).select_related('task').distinct()
-        similar = sum(bool(required & {s.casefold() for s in a.task.required_skills}) for a in previous)
+        if completed_assignments is None:
+            if profile and getattr(profile, 'member', None):
+                previous = Assignment.objects.filter(
+                    member=profile.member, task__status=TaskStatus.COMPLETED,
+                    task__completion_evidence__isnull=False,
+                ).select_related('task').distinct()
+                completed_assignments = list(previous)
+            else:
+                completed_assignments = []
+        similar = sum(bool(required & {s.casefold() for s in a.task.required_skills}) for a in completed_assignments)
         fit = CapabilityFit.STRONG if ratio == 1 else CapabilityFit.PARTIAL if ratio >= 0.5 else CapabilityFit.LIMITED
         return {
             'fit': fit, 'score': 2.0 if ratio == 1 else 1.0 if ratio >= 0.5 else 0.0,
@@ -44,20 +49,24 @@ class AdaptiveEngine:
         }
 
     @staticmethod
-    def calculate_capacity(member, task):
-        assignments = member.assignments.filter(
-            task__status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
-        ).select_related('task')
-        active_tasks = {a.task_id: a.task for a in assignments if a.task_id != task.id}
+    def calculate_capacity(member, task, active_assignments=None, signal_level=None):
+        if active_assignments is None:
+            assignments = member.assignments.filter(
+                task__status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+            ).select_related('task')
+            active_assignments = list(assignments)
+        if signal_level is None:
+            signal_level = member.latest_capacity_signal
+
+        active_tasks = {a.task_id: a.task for a in active_assignments if a.task_id != task.id}
         current = round(sum(task_load(t) for t in active_tasks.values()), 2)
         projected = round(current + task_load(task), 2)
-        signal = member.latest_capacity_signal
+        signal = signal_level or CapacityLevel.BALANCED
         # ponytail: 40 weighted hours is a demo baseline; calibrate per team with observed workload.
         system_fit = (CapacityFit.OVER_CAPACITY if projected >= 40 else
                       CapacityFit.NEAR_CAPACITY if projected >= 30 else
                       CapacityFit.BALANCED if projected >= 15 else CapacityFit.AVAILABLE)
         levels = list(CapacityLevel.values)
-        # Self-report changes priority and requires review, without becoming an automatic zero.
         signal_floor = CapacityLevel.NEAR_CAPACITY if signal == CapacityLevel.OVER_CAPACITY else signal
         fit = levels[max(levels.index(system_fit), levels.index(signal_floor))]
         score = {CapacityFit.AVAILABLE: 2.0, CapacityFit.BALANCED: 1.5,
@@ -71,10 +80,14 @@ class AdaptiveEngine:
         }
 
     @staticmethod
-    def calculate_access(task, profile):
+    def calculate_access(task, profile, workspace_support=None):
+        if workspace_support is None:
+            workspace = getattr(getattr(task, 'project', None), 'workspace', None)
+            workspace_support = workspace.access_support if workspace else []
+
         required = {item.casefold() for item in task.access_requirements}
-        preferences = {item.casefold() for item in profile.access_preferences}
-        support = {item.casefold() for item in task.project.workspace.access_support}
+        preferences = {item.casefold() for item in (profile.access_preferences if profile else [])}
+        support = {item.casefold() for item in workspace_support}
         ready = sorted(required & (preferences | support))
         unmet = sorted(required - (preferences | support))
         readiness = (AccessReadiness.READY if not unmet else
@@ -88,19 +101,72 @@ class AdaptiveEngine:
         }
 
     @classmethod
-    def analyze_task(cls, task):
+    def _fetch_team_context(cls, team):
+        """Batch fetch all team data in 5 queries to eliminate N+1."""
+        from collections import defaultdict
+        members = list(team.members.all())
+        member_ids = [m.id for m in members]
+
+        profiles = {p.member_id: p for p in WorkProfile.objects.filter(member_id__in=member_ids)}
+
+        completed_qs = Assignment.objects.filter(
+            member_id__in=member_ids,
+            task__status=TaskStatus.COMPLETED,
+            task__completion_evidence__isnull=False
+        ).select_related('task')
+        completed_by_member = defaultdict(list)
+        for a in completed_qs:
+            completed_by_member[a.member_id].append(a)
+
+        active_qs = Assignment.objects.filter(
+            member_id__in=member_ids,
+            task__status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+        ).select_related('task')
+        active_by_member = defaultdict(list)
+        for a in active_qs:
+            active_by_member[a.member_id].append(a)
+
+        signals = CapacitySignal.objects.filter(member_id__in=member_ids).order_by('member_id', '-created_at')
+        signals_by_member = {}
+        for s in signals:
+            if s.member_id not in signals_by_member:
+                signals_by_member[s.member_id] = s.level
+
+        workspace_support = team.workspace.access_support if hasattr(team, 'workspace') else []
+
+        return {
+            'members': members,
+            'profiles': profiles,
+            'completed_by_member': completed_by_member,
+            'active_by_member': active_by_member,
+            'signals_by_member': signals_by_member,
+            'workspace_support': workspace_support,
+        }
+
+    @classmethod
+    def analyze_task(cls, task, context=None):
+        if context is None:
+            team = task.project.team
+            context = cls._fetch_team_context(team)
+
+        workspace_support = context['workspace_support']
+        open_blockers = list(task.blockers.exclude(status='RESOLVED').values_list('type', flat=True)) if hasattr(task, 'blockers') else []
+
         candidates = []
-        for member in task.project.team.members.all():
-            profile = WorkProfile.objects.filter(member=member).first()
-            capability = cls.calculate_capability(task, profile) if profile else {
+        for member in context['members']:
+            profile = context['profiles'].get(member.id)
+            completed_assignments = context['completed_by_member'].get(member.id, [])
+            active_assignments = context['active_by_member'].get(member.id, [])
+            signal_level = context['signals_by_member'].get(member.id, CapacityLevel.BALANCED)
+
+            capability = cls.calculate_capability(task, profile, completed_assignments) if profile else {
                 'fit': CapabilityFit.LIMITED, 'score': 0.0, 'required_match': 0.0,
                 'matched_skills': [], 'missing_skills': task.required_skills,
                 'relevant_experience': [], 'similar_completed_tasks': 0,
-                'evidence': 'Work profile missing.',
-                'reason_codes': ['PROFILE_MISSING'],
+                'evidence': 'Work profile missing.', 'reason_codes': ['PROFILE_MISSING'],
             }
-            capacity = cls.calculate_capacity(member, task)
-            access = cls.calculate_access(task, profile) if profile else {
+            capacity = cls.calculate_capacity(member, task, active_assignments, signal_level)
+            access = cls.calculate_access(task, profile, workspace_support) if profile else {
                 'readiness': AccessReadiness.UNRESOLVED, 'score': 0.0,
                 'matched_preferences': [], 'workplace_support': [],
                 'unmet_preferences': task.access_requirements,
@@ -115,11 +181,13 @@ class AdaptiveEngine:
                 'review_required': not viable or capacity['fit'] == CapacityFit.OVER_CAPACITY
                                    or capacity['signal_level'] == CapacityLevel.OVER_CAPACITY,
             })
+
         candidates.sort(key=lambda c: (
             c['is_eligible'], c['capacity']['fit'] != CapacityFit.OVER_CAPACITY,
             c['capacity']['score'], c['capability']['score'], c['capability']['similar_completed_tasks'],
             len(c['capability']['relevant_experience'])
         ), reverse=True)
+
         viable = next((c for c in candidates if c['is_eligible']), None)
         recommendation = {'reason': 'No eligible candidate; review required skills and access support.'}
         if viable:
@@ -136,13 +204,14 @@ class AdaptiveEngine:
                     for c in candidates if c is not viable
                 ],
             }
+
         return {
             'candidates': candidates, 'recommendation': recommendation,
             'evidence': {'task_title': task.title, 'complexity': task.complexity,
                          'estimated_effort': task.estimated_effort,
                          'required_skills': task.required_skills,
                          'access_requirements': task.access_requirements,
-                         'open_blockers': list(task.blockers.exclude(status='RESOLVED').values_list('type', flat=True))},
+                         'open_blockers': open_blockers},
             'workload_impact': {c['member_id']: {
                 'before_hours': c['capacity']['current_hours'],
                 'after_hours': c['capacity']['projected_hours'],
@@ -151,9 +220,9 @@ class AdaptiveEngine:
         }
 
     @classmethod
-    def save_analysis(cls, task, trigger='manual'):
-        result = cls.analyze_task(task)
-        previous = task.analyses.first()
+    def save_analysis(cls, task, trigger='manual', context=None, previous_analysis=None):
+        result = cls.analyze_task(task, context=context)
+        previous = previous_analysis if previous_analysis is not None else task.analyses.first()
         old_id = previous.recommendation.get('recommended_member_id') if previous else None
         new_id = result['recommendation'].get('recommended_member_id')
         result['recommendation']['trigger'] = trigger
@@ -171,7 +240,14 @@ class AdaptiveEngine:
     def refresh_team(cls, team, trigger):
         """Refresh open work; changed recommendations are review prompts, not assignments."""
         from work.models import Task
-        for task in Task.objects.filter(project__team=team, status__in=[
-            TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED
-        ]):
-            cls.save_analysis(task, trigger)
+        tasks = list(Task.objects.filter(
+            project__team=team,
+            status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+        ).prefetch_related('blockers', 'analyses'))
+        if not tasks:
+            return
+
+        context = cls._fetch_team_context(team)
+        for task in tasks:
+            prev = task.analyses.all()[0] if task.analyses.all() else None
+            cls.save_analysis(task, trigger=trigger, context=context, previous_analysis=prev)
