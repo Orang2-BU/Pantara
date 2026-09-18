@@ -28,10 +28,10 @@ class EmployeeSkillViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        return queryset if self.request.user.is_staff else queryset.filter(member__email__iexact=self.request.user.email)
+        return queryset if self.request.user.is_staff else queryset.filter(member__user=self.request.user)
 
     def _check_owner(self, member):
-        if not self.request.user.is_staff and self.request.user.email.casefold() != member.email.casefold():
+        if not self.request.user.is_staff and member.user_id != self.request.user.pk:
             raise PermissionDenied('Only this member can declare their skill.')
 
     def perform_create(self, serializer):
@@ -84,12 +84,12 @@ class SkillEvidenceViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        return queryset if self.request.user.is_staff else queryset.filter(member__email__iexact=self.request.user.email)
+        return queryset if self.request.user.is_staff else queryset.filter(member__user=self.request.user)
 
     @action(detail=True, methods=['patch'])
     def review(self, request, pk=None):
         evidence = self.get_object()
-        if request.user.email.casefold() != evidence.member.email.casefold():
+        if evidence.member.user_id != request.user.pk:
             raise PermissionDenied('Only the assigned employee can review this evidence.')
         if evidence.confirmed_by_employee:
             raise PermissionDenied('Confirmed evidence cannot be edited.')
@@ -109,7 +109,7 @@ class SkillEvidenceViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         evidence = self.get_object()
-        if request.user.email.casefold() != evidence.member.email.casefold():
+        if evidence.member.user_id != request.user.pk:
             raise PermissionDenied('Only the assigned employee can confirm this evidence.')
         confirm_evidence(evidence)
         AdaptiveEngine.refresh_team(evidence.member.team, 'skill_evidence_confirmed')

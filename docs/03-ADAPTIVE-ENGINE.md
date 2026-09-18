@@ -26,7 +26,7 @@ Evidence: kebutuhan task, preferensi kerja, workplace support. Output: Ready / N
 
 Gunakan aturan transparan, bukan LLM sebagai penentu utama:
 
-Capability dan capacity masing-masing punya skor 0–2 sebagai evidence internal. Akses adalah syarat kelayakan: jika belum ready, kandidat memerlukan klarifikasi dan tidak direkomendasikan final. Kandidat viable dibandingkan berdasarkan kapasitas berkelanjutan, lalu kemampuan. Skor tidak menjadi ranking performa karyawan.
+Capability dan capacity masih menyimpan skor internal untuk kompatibilitas, tetapi policy V1.2 tidak menjumlahkannya. Akses yang belum ready memerlukan klarifikasi dan tidak direkomendasikan final. Kandidat viable dibandingkan berdasarkan kapasitas berkelanjutan, lalu kemampuan.
 
 ## Output
 
@@ -53,8 +53,8 @@ Simpan estimated vs actual effort, blocker context, capacity signal, dan outcome
 
 - `Skill` menyimpan nama kanonis dan alias. Migrasi mengimpor skill dari data lama. Skill baru harus ditambahkan ke katalog oleh admin; API task/profile mengembalikan `UNRESOLVED_SKILL` untuk nama yang belum ada.
 - `EmployeeSkill` menyimpan proficiency yang dinyatakan employee secara terpisah dari hasil observasi dan confidence. `TaskSkillRequirement` menyimpan prioritas dan minimum proficiency per skill. Edit lewat API baru juga memperbarui field JSON lama.
-- Saat task selesai, requirement pada assignment terbaru menjadi usulan `SkillEvidence`. Employee yang login dengan email yang sama dapat mengedit usage/context melalui `PATCH /api/skill-evidence/{id}/review/`, lalu menyetujui melalui `POST /api/skill-evidence/{id}/confirm/`. Bukti yang belum dikonfirmasi tidak mengubah observed proficiency.
-- Evaluator deterministik memakai bukti terkonfirmasi dari 365 hari terakhir. Dua penggunaan utama pada task kompleks menghasilkan `ADVANCED`; tiga penggunaan utama dengan minimal dua konteks menghasilkan confidence `HIGH`. Bukti completion tidak menaikkan proficiency secara otomatis satu tingkat per task. Declared proficiency tidak ditimpa.
+- Saat task selesai, requirement pada assignment terbaru menjadi usulan `SkillEvidence`. Hanya user yang tertaut melalui `Member.user` dapat mengedit usage/context melalui `PATCH /api/skill-evidence/{id}/review/`, lalu menyetujui melalui `POST /api/skill-evidence/{id}/confirm/`. Bukti yang belum dikonfirmasi tidak mengubah observed proficiency.
+- Evaluator deterministik memakai seluruh bukti terkonfirmasi. Dua penggunaan utama pada task kompleks menghasilkan `ADVANCED`; tiga penggunaan utama dengan minimal dua konteks menghasilkan confidence `HIGH`. Bukti lama tetap ada; usia lebih dari 365 hari menurunkan confidence. Bukti completion tidak menaikkan proficiency secara otomatis satu tingkat per task. Declared proficiency tidak ditimpa.
 - Capability menghasilkan `status`, `confidence`, `skill_match`, `relevant_experience_result`, dan `task_familiarity` dengan ID task sumber. Task familiarity membandingkan skill, category, dan tags dari task selesai; tanpa riwayat hasilnya `UNKNOWN`.
 
 Admin mengelola katalog di `/api/skills/` atau Django admin. Employee mengelola deklarasi skill di `/api/employee-skills/`. Admin mengelola requirement di `/api/task-skill-requirements/`. Jalankan `python manage.py migrate` setelah update.
@@ -62,5 +62,38 @@ Admin mengelola katalog di `/api/skills/` atau Django admin. Employee mengelola 
 `progress` adalah persentase 0–100 pada Task. `access_support` adalah daftar dukungan tersedia pada Workspace. Riwayat analisis dapat dibaca di `/api/adaptive-analyses/`.
 
 ## AI boundary
+
+## V1.2 robustness dan recommendation policy
+
+Policy final bersifat hierarkis: capability viability, access readiness, projected capacity, lalu kualitas evidence. Mandatory requirement yang gagal menjadi `NOT_VIABLE`; access belum siap, proficiency yang perlu klarifikasi, atau projected over-capacity menjadi `REVIEW_REQUIRED`. Kandidat yang aman menjadi `RECOMMENDED` atau `ALTERNATIVE`. Total score tidak dipakai untuk keputusan.
+
+`candidates[].recommendation_result` berisi kategori, capability status/level/confidence, capacity current/projected, access status, reason codes, dan considerations. Tanpa kandidat aman, tidak ada `recommended_member_id`. Analisis ulang memberi reason codes `CONDITION_CHANGED`, `REANALYSIS_TRIGGERED`, dan jika perlu `REDISTRIBUTION_REVIEW`; perpindahan assignment tetap keputusan manusia.
+
+Seluruh `SkillEvidence` terkonfirmasi tetap dihitung untuk observed proficiency. Bila bukti terakhir lebih tua dari 365 hari, confidence turun, bukan proficiency yang terhapus. Hanya user yang ditautkan lewat `Member.user` ke pemilik evidence dapat review/confirm. Setelah migrasi, admin perlu menautkan akun lama ke member yang benar; email tidak dipakai untuk otorisasi maupun migrasi otomatis. Jalankan `python manage.py migrate` setelah update.
+
+Suite V1.2 mencakup 16 persona adversarial, monotonicity confidence, isolasi capability dari access/capacity, riwayat tak relevan, recency, re-analysis, dan penyalahgunaan identitas evidence. Threshold masih heuristik demo, bukan kalibrasi data nyata.
+
+### Hasil 16 persona sintetis
+
+Semua input lain memakai baseline: capability eligible/strong/high, access ready, projected capacity balanced. `Actual` berasal dari `RecommendationPolicyScenarios` dan diverifikasi dengan `manage.py test`.
+
+| Scenario | Input pembeda | Expected invariant | Actual | Reason code utama | Hasil |
+| --- | --- | --- | --- | --- | --- |
+| Cold-start expert | Confidence low | Deklarasi saja tidak menjadi evidence kuat | ALTERNATIVE | LIMITED_HISTORICAL_EVIDENCE | PASS |
+| Declared/observed disagreement | Capability review | Konflik tidak final | REVIEW_REQUIRED | MIXED_PROFICIENCY_EVIDENCE | PASS |
+| Banyak evidence minor | Capability limited | Banyak bukti minor tidak otomatis sangat kuat | ALTERNATIVE | MANDATORY_REQUIREMENTS_MET | PASS |
+| Sedikit primary | Confidence low | Bukti terbatas terlihat | ALTERNATIVE | LIMITED_HISTORICAL_EVIDENCE | PASS |
+| Konteks identik | Confidence medium | Tidak mengklaim confidence high | ALTERNATIVE | SUSTAINABLE_PROJECTED_CAPACITY | PASS |
+| Evidence kuat usang | Stale observed | Tidak final tanpa review | REVIEW_REQUIRED | STALE_OBSERVED_EVIDENCE | PASS |
+| Mandatory missing | React mandatory hilang | Tidak viable meski level sangat kuat | NOT_VIABLE | MANDATORY_REQUIREMENT_MISSING | PASS |
+| Required fit gagal | Requirement not met | Tidak viable | NOT_VIABLE | CAPABILITY_REQUIREMENT_NOT_MET | PASS |
+| Preferred missing | Mandatory terpenuhi | Preferred tidak menjadi gate | ALTERNATIVE | MANDATORY_REQUIREMENTS_MET | PASS |
+| Overqualified | Very strong | Skill tinggi saja bukan otomatis recommended | ALTERNATIVE | ACCESS_READY | PASS |
+| Strong over-capacity | Projected over | Tidak dipilih otomatis | REVIEW_REQUIRED | PROJECTED_OVER_CAPACITY | PASS |
+| Moderate available | Projected available | Tetap kandidat aman | ALTERNATIVE | SUSTAINABLE_PROJECTED_CAPACITY | PASS |
+| Access unresolved | Unresolved | Tidak final | REVIEW_REQUIRED | ACCESS_UNRESOLVED | PASS |
+| Access resolvable | Needs support | Dukungan perlu dituntaskan | REVIEW_REQUIRED | ACCESS_SUPPORT_REQUIRED | PASS |
+| Employee over signal | Signal over | Sinyal employee dihormati | REVIEW_REQUIRED | EMPLOYEE_CAPACITY_SIGNAL | PASS |
+| Near capacity | Projected near | Dipertimbangkan dengan peringatan | ALTERNATIVE | PROJECTED_NEAR_CAPACITY | PASS |
 
 AI boleh membantu merangkum evidence dan menjelaskan rekomendasi. Perhitungan workload, deadline, eligibility, dan access matching harus deterministik. AI tidak boleh mendiagnosis mental health, menyimpulkan kondisi pribadi, atau membuat keputusan assignment final.

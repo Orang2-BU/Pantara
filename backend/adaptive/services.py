@@ -8,6 +8,7 @@ from core.models import CapacityLevel, CapacitySignal, WorkProfile
 from work.models import Assignment, TaskStatus
 from adaptive.models import (AccessReadiness, AdaptiveAnalysis, CapabilityFit, CapacityFit,
                              EmployeeSkill, TaskSkillRequirement)
+from adaptive.policy import evaluate_candidate, select_candidate
 
 SKILL_ALIASES = {'reactjs': 'react', 'react.js': 'react', 'react-js': 'react', 'ts': 'typescript', 'py': 'python'}
 LEVELS = {'BEGINNER': 1, 'INTERMEDIATE': 2, 'ADVANCED': 3, 'EXPERT': 4, 'UNKNOWN': 0}
@@ -70,20 +71,24 @@ class AdaptiveEngine:
         required = {r['skill'] for r in requirements if r['priority'] != 'PREFERRED'}
         reasons = []
         conflicts = []
+        uncertainties = []
         matched = []
         proficiency = {}
         for r in requirements:
             name = r['skill']
             declared = LEVELS.get(skill_levels.get(name, 'UNKNOWN'), 0)
             row = observed.get(name)
-            fresh = bool(row and row.last_evidence_at and row.last_evidence_at >= timezone.now() - timedelta(days=365))
-            observed_level = LEVELS.get(row.observed_proficiency, 0) if fresh else 0
-            high = bool(fresh and row.evidence_confidence == 'HIGH')
+            stale = bool(row and row.last_evidence_at and row.last_evidence_at < timezone.now() - timedelta(days=365))
+            observed_level = LEVELS.get(row.observed_proficiency, 0) if row else 0
+            effective_confidence = ('MEDIUM' if stale and row.evidence_confidence == 'HIGH' else
+                                    'LOW' if stale else row.evidence_confidence if row else 'LOW')
+            high = effective_confidence == 'HIGH'
             minimum = LEVELS.get(r['min_level'], 2)
             proficiency[name] = {
                 'declared': skill_levels.get(name, 'UNKNOWN'),
-                'observed': row.observed_proficiency if fresh else 'UNKNOWN',
-                'confidence': row.evidence_confidence if fresh else 'LOW',
+                'observed': row.observed_proficiency if row else 'UNKNOWN',
+                'confidence': effective_confidence,
+                'stale': stale,
             }
             if high and observed_level >= minimum:
                 meets = True
@@ -94,6 +99,9 @@ class AdaptiveEngine:
                 reasons.append('MIXED_PROFICIENCY_EVIDENCE')
             else:
                 meets = declared >= minimum
+                if stale and observed_level >= minimum and not meets:
+                    uncertainties.append(name)
+                    reasons.append('STALE_OBSERVED_EVIDENCE')
                 if meets:
                     reasons.append('SELF_DECLARED_ONLY')
             if meets and r['priority'] != 'PREFERRED':
@@ -130,7 +138,7 @@ class AdaptiveEngine:
                 related.append((str(old.id), relevance))
         related.sort(key=lambda item: item[1], reverse=True)
         similar = len(related)
-        status = ('REVIEW_REQUIRED' if conflicts else 'REQUIREMENT_NOT_MET' if mandatory_missing or ratio < 0.5
+        status = ('REVIEW_REQUIRED' if conflicts or uncertainties else 'REQUIREMENT_NOT_MET' if mandatory_missing or ratio < 0.5
                   else 'ELIGIBLE')
         required_confidences = [proficiency[name]['confidence'] for name in required]
         confidence = ('HIGH' if required_confidences and all(c == 'HIGH' for c in required_confidences)
@@ -148,6 +156,7 @@ class AdaptiveEngine:
             'missing_skills': missing, 'relevant_experience': relevant_experience,
             'mandatory_missing': mandatory_missing, 'preferred_matches': preferred,
             'missing_requirements': missing, 'considerations': (['MIXED_PROFICIENCY_EVIDENCE'] if conflicts else
+                                                                 ['STALE_OBSERVED_EVIDENCE'] if uncertainties else
                                                                  ['MANDATORY_PROFICIENCY_NOT_MET'] if mandatory_missing else []),
             'similar_completed_tasks': similar,
             'relevant_experience_result': {'level': 'STRONG' if similar >= 2 else 'MODERATE' if similar else 'NONE',
@@ -177,16 +186,21 @@ class AdaptiveEngine:
         projected = round(current + task_load(task), 2)
         signal = signal_level or CapacityLevel.BALANCED
         # ponytail: 40 weighted hours is a demo baseline; calibrate per team with observed workload.
-        system_fit = (CapacityFit.OVER_CAPACITY if projected >= 40 else
-                      CapacityFit.NEAR_CAPACITY if projected >= 30 else
-                      CapacityFit.BALANCED if projected >= 15 else CapacityFit.AVAILABLE)
+        def state(load):
+            return (CapacityFit.OVER_CAPACITY if load >= 40 else
+                    CapacityFit.NEAR_CAPACITY if load >= 30 else
+                    CapacityFit.BALANCED if load >= 15 else CapacityFit.AVAILABLE)
+
+        current_fit = state(current)
+        system_fit = state(projected)
         levels = list(CapacityLevel.values)
         signal_floor = CapacityLevel.NEAR_CAPACITY if signal == CapacityLevel.OVER_CAPACITY else signal
         fit = levels[max(levels.index(system_fit), levels.index(signal_floor))]
         score = {CapacityFit.AVAILABLE: 2.0, CapacityFit.BALANCED: 1.5,
                  CapacityFit.NEAR_CAPACITY: 0.8, CapacityFit.OVER_CAPACITY: 0.0}[fit]
         return {
-            'fit': fit, 'system_fit': system_fit, 'score': score, 'current_hours': current,
+            'fit': fit, 'current_fit': current_fit, 'system_fit': system_fit,
+            'score': score, 'current_hours': current,
             'projected_hours': projected, 'weighted_workload_units': projected,
             'current_workload_units': current, 'signal_level': signal,
             'active_tasks_count': len(active_tasks),
@@ -307,37 +321,40 @@ class AdaptiveEngine:
                 'unmet_preferences': task.access_requirements,
                 'evidence': 'Work profile missing.', 'reason_codes': ['PROFILE_MISSING'],
             }
-            viable = capability['status'] == 'ELIGIBLE' and access['readiness'] == AccessReadiness.READY
-            candidates.append({
+            candidate = {
                 'member_id': str(member.id), 'member_name': member.name, 'role': member.role,
-                'total_score': round(capability['score'] + capacity['score'], 2),
                 'capability': capability, 'capacity': capacity, 'access': access,
-                'is_eligible': viable,
-                'review_required': not viable or capacity['fit'] == CapacityFit.OVER_CAPACITY
-                                   or capacity['signal_level'] == CapacityLevel.OVER_CAPACITY,
-            })
+            }
+            candidate['recommendation_result'] = evaluate_candidate(candidate, bool(open_blockers))
+            category = candidate['recommendation_result']['recommendation']
+            candidate['is_eligible'] = category == 'ALTERNATIVE'
+            candidate['review_required'] = category in {'REVIEW_REQUIRED', 'NOT_VIABLE'}
+            candidates.append(candidate)
 
-        candidates.sort(key=lambda c: (
-            c['is_eligible'], c['capacity']['fit'] != CapacityFit.OVER_CAPACITY,
-            c['capacity']['score'], c['capability']['score'], c['capability']['similar_completed_tasks'],
-            len(c['capability']['relevant_experience'])
-        ), reverse=True)
-
-        viable = next((c for c in candidates if c['is_eligible']), None)
-        recommendation = {'reason': 'No eligible candidate; review required skills and access support.'}
+        viable = select_candidate(candidates)
+        if viable:
+            viable['is_eligible'] = True
+        candidates.sort(key=lambda c: ({'RECOMMENDED': 3, 'ALTERNATIVE': 2,
+                                        'REVIEW_REQUIRED': 1, 'NOT_VIABLE': 0}[c['recommendation_result']['recommendation']],
+                                       c['member_id']), reverse=True)
+        recommendation = {'reason': 'No sustainable eligible candidate; human review required.',
+                          'reason_codes': ['HUMAN_REVIEW_REQUIRED'],
+                          'review_candidates': [c['member_id'] for c in candidates if c['review_required']]}
         if viable:
             recommendation = {
                 'recommended_member_id': viable['member_id'],
                 'recommended_member_name': viable['member_name'],
-                'score': viable['total_score'], 'review_required': viable['review_required'],
-                'reason_codes': viable['capability']['reason_codes'] + viable['capacity']['reason_codes'] + viable['access']['reason_codes'],
+                'review_required': False,
+                'reason_codes': viable['recommendation_result']['reason_codes'],
                 'reason': f"{viable['member_name']}: {viable['capability']['evidence']} {viable['capacity']['evidence']} {viable['access']['evidence']}",
                 'alternatives': [
                     {'member_id': c['member_id'], 'member_name': c['member_name'],
-                     'review_required': c['review_required'], 'reason_codes':
-                     c['capability']['reason_codes'] + c['capacity']['reason_codes'] + c['access']['reason_codes']}
-                    for c in candidates if c is not viable
+                     'category': c['recommendation_result']['recommendation'],
+                     'review_required': c['review_required'],
+                     'reason_codes': c['recommendation_result']['reason_codes']}
+                    for c in candidates if c is not viable and c['is_eligible']
                 ],
+                'review_candidates': [c['member_id'] for c in candidates if c['review_required']],
             }
 
         return {
@@ -364,11 +381,14 @@ class AdaptiveEngine:
         result['recommendation']['changed_from_previous'] = previous is not None and old_id != new_id
         if previous and previous.candidates == result['candidates'] and previous.evidence == result['evidence']:
             return previous
+        if previous:
+            result['recommendation']['reason_codes'].extend(['CONDITION_CHANGED', 'REANALYSIS_TRIGGERED'])
         if previous and trigger != 'manual' and (
             old_id != new_id or result['evidence']['open_blockers']
             or result['recommendation'].get('review_required')
         ):
             result['recommendation']['intervention'] = 'REVIEW_REDISTRIBUTION'
+            result['recommendation']['reason_codes'].append('REDISTRIBUTION_REVIEW')
         return AdaptiveAnalysis.objects.create(task=task, **result)
 
     @classmethod

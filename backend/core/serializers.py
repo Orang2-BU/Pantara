@@ -50,5 +50,5 @@ class MemberSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Member
-        fields = ['id', 'team', 'name', 'email', 'role', 'latest_capacity_signal', 'work_profile', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = ['id', 'team', 'user', 'name', 'email', 'role', 'latest_capacity_signal', 'work_profile', 'created_at']
+        read_only_fields = ['id', 'user', 'created_at']

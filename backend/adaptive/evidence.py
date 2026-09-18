@@ -86,9 +86,8 @@ def propose_task_evidence(task):
 
 
 def evaluate_evidence(records):
-    """Conservative one-year heuristic. Contextual delays never count as a penalty."""
-    records = [r for r in records if r.confirmed_by_employee
-               and r.created_at >= timezone.now() - timedelta(days=365)]
+    """Keep historical proficiency; age reduces confidence, not the observed level."""
+    records = [r for r in records if r.confirmed_by_employee]
     records.sort(key=lambda r: r.created_at, reverse=True)
     primary = [r for r in records if r.usage_level == 'PRIMARY']
     strong = [r for r in primary if r.task_complexity == 'HIGH']
@@ -98,6 +97,8 @@ def evaluate_evidence(records):
                 else 'INTERMEDIATE' if primary else 'BEGINNER')
     confidence = ('HIGH' if len(primary) >= 3 and len(contexts) >= 2
                   else 'MEDIUM' if len(records) >= 2 else 'LOW')
+    if records and records[0].created_at < timezone.now() - timedelta(days=365):
+        confidence = 'MEDIUM' if confidence == 'HIGH' else 'LOW'
     return {'observed_proficiency': observed, 'evidence_confidence': confidence,
             'evidence_count': len(records), 'strong_evidence_count': len(strong),
             'context_diversity': len(contexts),

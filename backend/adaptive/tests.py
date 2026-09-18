@@ -1,19 +1,20 @@
 from datetime import date, timedelta
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from adaptive.services import AdaptiveEngine, task_load
+from adaptive.policy import evaluate_candidate, select_candidate
 from adaptive.evidence import evaluate_evidence, resolve_skill, sync_profile_skills, sync_task_requirements
 from adaptive.models import EmployeeSkill, SkillEvidence
 from core.models import CapacitySignal, Member, Team, WorkProfile, Workspace
 from work.models import Assignment, CompletionEvidence, Project, Task, TaskStatus
 
 
-class AdaptiveEngineTests(TestCase):
+class EngineFixture:
     def setUp(self):
         self.workspace = Workspace.objects.create(name='Demo', access_support=['caption'])
         self.team = Team.objects.create(name='Team', workspace=self.workspace)
@@ -30,6 +31,9 @@ class AdaptiveEngineTests(TestCase):
         CapacitySignal.objects.create(member=self.strong, level='NEAR_CAPACITY')
         CapacitySignal.objects.create(member=self.available, level='AVAILABLE')
         CapacitySignal.objects.create(member=self.unskilled, level='AVAILABLE')
+
+
+class AdaptiveEngineTests(EngineFixture, TestCase):
 
     def test_policy_ranks_sustainable_viable_candidate(self):
         result = AdaptiveEngine.analyze_task(self.task)
@@ -303,6 +307,8 @@ class AdaptiveEngineTests(TestCase):
         proposed = SkillEvidence.objects.get(member=self.strong, task=self.task, skill=resolve_skill('React'))
         self.assertFalse(proposed.confirmed_by_employee)
         user = get_user_model().objects.create_user(username='strong', email=self.strong.email, password='x')
+        self.strong.user = user
+        self.strong.save(update_fields=['user'])
         client = APIClient()
         client.force_authenticate(user=user)
         response = client.post(f'/api/skill-evidence/{proposed.id}/confirm/')
@@ -348,6 +354,8 @@ class AdaptiveEngineTests(TestCase):
         client.force_authenticate(user=stranger)
         self.assertEqual(client.post(f'/api/skill-evidence/{records[2].id}/confirm/').status_code, 404)
         owner = get_user_model().objects.create_user(username='owner', email=self.strong.email, password='x')
+        self.strong.user = owner
+        self.strong.save(update_fields=['user'])
         client.force_authenticate(user=owner)
         self.assertEqual(client.patch(f'/api/skill-evidence/{records[2].id}/review/',
                                       {'usage_level': 'MINOR', 'context_tags': ['dependency_delay']},
@@ -361,3 +369,172 @@ class AdaptiveEngineTests(TestCase):
         self.assertEqual(task.skill_requirements.count(), 3)
         self.assertTrue(EmployeeSkill.objects.filter(member__name__contains='Budi').exists())
         self.assertIn('recommended_member_id', AdaptiveEngine.analyze_task(task)['recommendation'])
+
+
+class RecommendationPolicyScenarios(SimpleTestCase):
+    """Adversarial personas: each case checks an invariant, not a fragile score."""
+
+    def candidate(self, **changes):
+        candidate = {
+            'member_id': 'EMP-1',
+            'capability': {'status': 'ELIGIBLE', 'level': 'STRONG', 'confidence': 'HIGH',
+                           'mandatory_missing': [], 'relevant_experience_result': {'evidence_task_ids': []}},
+            'capacity': {'current_fit': 'AVAILABLE', 'fit': 'BALANCED', 'signal_level': 'AVAILABLE'},
+            'access': {'readiness': 'READY'},
+        }
+        for key, value in changes.items():
+            section, field = key.split('__')
+            candidate[section][field] = value
+        return candidate
+
+    def test_sixteen_adversarial_policy_personas(self):
+        scenarios = [
+            ('cold_start_expert', {'capability__confidence': 'LOW'}, 'ALTERNATIVE', 'LIMITED_HISTORICAL_EVIDENCE'),
+            ('declared_observed_disagree', {'capability__status': 'REVIEW_REQUIRED'}, 'REVIEW_REQUIRED', 'MIXED_PROFICIENCY_EVIDENCE'),
+            ('many_minor_evidence', {'capability__level': 'LIMITED', 'capability__confidence': 'MEDIUM'}, 'ALTERNATIVE', 'MANDATORY_REQUIREMENTS_MET'),
+            ('few_primary_evidence', {'capability__confidence': 'LOW'}, 'ALTERNATIVE', 'LIMITED_HISTORICAL_EVIDENCE'),
+            ('identical_contexts', {'capability__confidence': 'MEDIUM'}, 'ALTERNATIVE', 'SUSTAINABLE_PROJECTED_CAPACITY'),
+            ('strong_but_stale', {'capability__status': 'REVIEW_REQUIRED',
+                                  'capability__reason_codes': ['STALE_OBSERVED_EVIDENCE']},
+             'REVIEW_REQUIRED', 'STALE_OBSERVED_EVIDENCE'),
+            ('mandatory_missing', {'capability__mandatory_missing': ['react'], 'capability__level': 'VERY_STRONG'}, 'NOT_VIABLE', 'MANDATORY_REQUIREMENT_MISSING'),
+            ('required_fit_missing', {'capability__status': 'REQUIREMENT_NOT_MET'}, 'NOT_VIABLE', 'CAPABILITY_REQUIREMENT_NOT_MET'),
+            ('preferred_missing', {}, 'ALTERNATIVE', 'MANDATORY_REQUIREMENTS_MET'),
+            ('overqualified', {'capability__level': 'VERY_STRONG'}, 'ALTERNATIVE', 'ACCESS_READY'),
+            ('strong_over_capacity', {'capability__level': 'VERY_STRONG', 'capacity__fit': 'OVER_CAPACITY'}, 'REVIEW_REQUIRED', 'PROJECTED_OVER_CAPACITY'),
+            ('moderate_available', {'capability__level': 'MODERATE', 'capacity__fit': 'AVAILABLE'}, 'ALTERNATIVE', 'SUSTAINABLE_PROJECTED_CAPACITY'),
+            ('unresolved_access', {'access__readiness': 'UNRESOLVED'}, 'REVIEW_REQUIRED', 'ACCESS_UNRESOLVED'),
+            ('resolvable_access', {'access__readiness': 'NEEDS_SUPPORT'}, 'REVIEW_REQUIRED', 'ACCESS_SUPPORT_REQUIRED'),
+            ('employee_over_signal', {'capacity__signal_level': 'OVER_CAPACITY'}, 'REVIEW_REQUIRED', 'EMPLOYEE_CAPACITY_SIGNAL'),
+            ('near_capacity', {'capacity__fit': 'NEAR_CAPACITY'}, 'ALTERNATIVE', 'PROJECTED_NEAR_CAPACITY'),
+        ]
+        for name, changes, expected, code in scenarios:
+            with self.subTest(scenario=name):
+                result = evaluate_candidate(self.candidate(**changes))
+                self.assertEqual(result['recommendation'], expected)
+                self.assertIn(code, result['reason_codes'])
+
+    def test_sustainable_candidate_beats_stronger_overloaded_candidate(self):
+        sustainable = self.candidate(capability__level='MODERATE')
+        overloaded = self.candidate(capability__level='VERY_STRONG', capacity__fit='OVER_CAPACITY')
+        overloaded['member_id'] = 'EMP-2'
+        for candidate in (sustainable, overloaded):
+            candidate['recommendation_result'] = evaluate_candidate(candidate)
+        self.assertIs(select_candidate([overloaded, sustainable]), sustainable)
+        self.assertEqual(sustainable['recommendation_result']['recommendation'], 'RECOMMENDED')
+
+    def test_active_blocker_is_explained(self):
+        result = evaluate_candidate(self.candidate(), has_blocker=True)
+        self.assertIn('ACTIVE_BLOCKER', result['reason_codes'])
+        self.assertTrue(result['considerations'])
+
+
+class AdaptiveRobustnessTests(EngineFixture, TestCase):
+    def test_evidence_age_preserves_observed_level_but_reduces_confidence(self):
+        skill = resolve_skill('React')
+        records = []
+        for index, tag in enumerate(('a', 'b', 'c')):
+            task = Task.objects.create(project=self.project, title=f'Old {index}', estimated_effort=2)
+            record = SkillEvidence.objects.create(member=self.strong, task=task, skill=skill,
+                                                  usage_level='PRIMARY', task_complexity='HIGH',
+                                                  context_tags=[tag], confirmed_by_employee=True)
+            records.append(record)
+        fresh = evaluate_evidence(records)
+        self.assertEqual(fresh['evidence_confidence'], 'HIGH')
+        for record in records:
+            SkillEvidence.objects.filter(pk=record.pk).update(created_at=timezone.now() - timedelta(days=730))
+            record.refresh_from_db()
+        stale = evaluate_evidence(records)
+        self.assertEqual(stale['observed_proficiency'], 'ADVANCED')
+        self.assertEqual(stale['evidence_confidence'], 'MEDIUM')
+
+    def test_confirmed_evidence_never_reduces_confidence(self):
+        skill = resolve_skill('React')
+        records = []
+        order = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2}
+        previous = 0
+        for index, tag in enumerate(('a', 'b', 'c', 'd')):
+            task = Task.objects.create(project=self.project, title=f'Evidence {index}', estimated_effort=2)
+            records.append(SkillEvidence.objects.create(member=self.strong, task=task, skill=skill,
+                                                        usage_level='PRIMARY', task_complexity='HIGH',
+                                                        context_tags=[tag], confirmed_by_employee=True))
+            current = order[evaluate_evidence(records)['evidence_confidence']]
+            self.assertGreaterEqual(current, previous)
+            previous = current
+
+    def test_many_minor_and_identical_contexts_do_not_inflate_proficiency(self):
+        skill = resolve_skill('React')
+        records = []
+        for index in range(8):
+            task = Task.objects.create(project=self.project, title=f'Minor {index}', estimated_effort=2)
+            records.append(SkillEvidence.objects.create(member=self.strong, task=task, skill=skill,
+                                                        usage_level='MINOR', task_complexity='HIGH',
+                                                        context_tags=['same'], confirmed_by_employee=True))
+        result = evaluate_evidence(records)
+        self.assertEqual(result['observed_proficiency'], 'BEGINNER')
+        self.assertEqual(result['evidence_confidence'], 'MEDIUM')
+        self.assertEqual(result['context_diversity'], 1)
+
+    def test_stale_observed_skill_requires_review_not_erasure(self):
+        self.task.required_skills = [{'skill': 'React', 'priority': 'MANDATORY', 'min_level': 'ADVANCED'}]
+        skill = resolve_skill('React')
+        EmployeeSkill.objects.create(member=self.strong, skill=skill, declared_proficiency='INTERMEDIATE',
+                                     observed_proficiency='ADVANCED', evidence_confidence='HIGH',
+                                     last_evidence_at=timezone.now() - timedelta(days=730))
+        result = AdaptiveEngine.calculate_capability(self.task, self.strong.work_profile)
+        self.assertEqual(result['proficiency']['react']['observed'], 'ADVANCED')
+        self.assertEqual(result['proficiency']['react']['confidence'], 'MEDIUM')
+        self.assertEqual(result['status'], 'REVIEW_REQUIRED')
+        self.assertIn('STALE_OBSERVED_EVIDENCE', result['reason_codes'])
+
+    def test_unrelated_history_and_preferred_skill_do_not_repair_mandatory(self):
+        self.task.required_skills = [
+            {'skill': 'React', 'priority': 'MANDATORY', 'min_level': 'ADVANCED'},
+            {'skill': 'TypeScript', 'priority': 'PREFERRED'},
+        ]
+        profile = self.unskilled.work_profile
+        profile.skills = [{'skill': 'TypeScript', 'level': 'EXPERT'}]
+        old = Task.objects.create(project=self.project, title='Unrelated Python', estimated_effort=2,
+                                  required_skills=['Python'],
+                                  status=TaskStatus.COMPLETED)
+        assignment = Assignment.objects.create(task=old, member=self.unskilled)
+        CompletionEvidence.objects.create(task=old, estimated_effort=2, actual_effort=2)
+        result = AdaptiveEngine.calculate_capability(self.task, profile, [assignment])
+        self.assertEqual(result['status'], 'REQUIREMENT_NOT_MET')
+        self.assertEqual(result['mandatory_missing'], ['react'])
+        self.assertEqual(result['relevant_experience_result']['evidence_task_ids'], [])
+
+    def test_access_and_capacity_changes_do_not_change_capability(self):
+        before = AdaptiveEngine.calculate_capability(self.task, self.strong.work_profile)
+        self.strong.work_profile.access_needs = ['screen_reader']
+        self.strong.work_profile.save(update_fields=['access_needs'])
+        CapacitySignal.objects.create(member=self.strong, level='OVER_CAPACITY')
+        after = AdaptiveEngine.calculate_capability(self.task, self.strong.work_profile)
+        self.assertEqual(before, after)
+
+    def test_identity_relation_blocks_email_impersonation_and_other_member(self):
+        skill = resolve_skill('React')
+        evidence = SkillEvidence.objects.create(member=self.strong, task=self.task, skill=skill)
+        same_email = get_user_model().objects.create_user(username='impostor', email=self.strong.email)
+        other = get_user_model().objects.create_user(username='other', email=self.available.email)
+        self.available.user = other
+        self.available.save(update_fields=['user'])
+        manager = get_user_model().objects.create_user(username='manager', is_staff=True)
+        client = APIClient()
+        self.assertIn(client.patch(f'/api/skill-evidence/{evidence.id}/review/').status_code, (401, 403))
+        for user in (same_email, other, manager):
+            client.force_authenticate(user=user)
+            self.assertIn(client.post(f'/api/skill-evidence/{evidence.id}/confirm/').status_code, (403, 404))
+        evidence.refresh_from_db()
+        self.assertFalse(evidence.confirmed_by_employee)
+
+    def test_reanalysis_reason_codes_and_blocker(self):
+        first = AdaptiveEngine.save_analysis(self.task)
+        second = AdaptiveEngine.save_analysis(self.task, trigger='capacity_signal_changed')
+        self.assertEqual(first.pk, second.pk)
+        CapacitySignal.objects.create(member=self.available, level='OVER_CAPACITY')
+        third = AdaptiveEngine.save_analysis(self.task, trigger='capacity_signal_changed')
+        self.assertIn('CONDITION_CHANGED', third.recommendation['reason_codes'])
+        self.assertIn('REANALYSIS_TRIGGERED', third.recommendation['reason_codes'])
+        self.assertIn('REDISTRIBUTION_REVIEW', third.recommendation['reason_codes'])
+        self.assertNotEqual(first.pk, third.pk)
