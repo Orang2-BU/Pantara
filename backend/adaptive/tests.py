@@ -81,3 +81,140 @@ class AdaptiveEngineTests(TestCase):
         self.assertEqual(latest.recommendation['intervention'], 'REVIEW_REDISTRIBUTION')
         self.task.refresh_from_db()
         self.assertEqual(self.task.status, TaskStatus.BLOCKED)
+
+    def test_calculate_access_ready_via_support_and_preferences(self):
+        self.task.access_requirements = ['screen_reader', 'quiet_room']
+        self.task.project.workspace.access_support = ['quiet_room']
+        profile = WorkProfile(access_preferences=['screen_reader'])
+        res = AdaptiveEngine.calculate_access(self.task, profile)
+        self.assertEqual(res['readiness'], 'READY')
+        self.assertEqual(res['score'], 2.0)
+        self.assertEqual(res['matched_preferences'], ['screen_reader'])
+        self.assertEqual(res['workplace_support'], ['quiet_room'])
+        self.assertEqual(res['unmet_preferences'], [])
+
+    def test_calculate_access_needs_support(self):
+        self.task.access_requirements = ['screen_reader', 'quiet_room']
+        self.task.project.workspace.access_support = ['quiet_room']
+        profile = WorkProfile(access_preferences=[])
+        res = AdaptiveEngine.calculate_access(self.task, profile)
+        self.assertEqual(res['readiness'], 'NEEDS_SUPPORT')
+        self.assertEqual(res['score'], 1.0)
+        self.assertEqual(res['unmet_preferences'], ['screen_reader'])
+
+    def test_calculate_access_unresolved(self):
+        self.task.access_requirements = ['braille_display']
+        self.task.project.workspace.access_support = []
+        profile = WorkProfile(access_preferences=[])
+        res = AdaptiveEngine.calculate_access(self.task, profile)
+        self.assertEqual(res['readiness'], 'UNRESOLVED')
+        self.assertEqual(res['score'], 0.0)
+        self.assertEqual(res['unmet_preferences'], ['braille_display'])
+
+    def test_task_load_formula_matrix(self):
+        # 1. Completed task is always 0.0
+        completed = Task(status=TaskStatus.COMPLETED, estimated_effort=20, complexity='HIGH', progress=0)
+        self.assertEqual(task_load(completed), 0.0)
+
+        # 2. No deadline -> deadline_factor = 1.0
+        t_no_deadline = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='MEDIUM', progress=0)
+        self.assertEqual(task_load(t_no_deadline), 10.0)
+
+        # 3. Complexity factors: LOW=0.8, MEDIUM=1.0, HIGH=1.3 with normal deadline (>7 days -> 1.0)
+        t_low = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='LOW', progress=0,
+                     deadline=date.today() + timedelta(days=14))
+        t_med = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='MEDIUM', progress=0,
+                     deadline=date.today() + timedelta(days=14))
+        t_high = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='HIGH', progress=0,
+                      deadline=date.today() + timedelta(days=14))
+        self.assertEqual(task_load(t_low), 8.0)
+        self.assertEqual(task_load(t_med), 10.0)
+        self.assertEqual(task_load(t_high), 13.0)
+
+        # 4. Deadline factors: <3 days -> 1.5, <=7 days -> 1.2, >7 days -> 1.0
+        t_urgent = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='MEDIUM', progress=0,
+                        deadline=date.today() + timedelta(days=2))
+        t_week = Task(status=TaskStatus.PENDING, estimated_effort=10, complexity='MEDIUM', progress=0,
+                      deadline=date.today() + timedelta(days=7))
+        self.assertEqual(task_load(t_urgent), 15.0)
+        self.assertEqual(task_load(t_week), 12.0)
+
+        # 5. Progress factor: (1 - progress / 100)
+        t_half = Task(status=TaskStatus.IN_PROGRESS, estimated_effort=10, complexity='HIGH', progress=50,
+                      deadline=date.today() + timedelta(days=2))
+        # 10 * 0.5 * 1.3 * 1.5 = 9.75
+        self.assertEqual(task_load(t_half), 9.75)
+
+        t_almost_done = Task(status=TaskStatus.IN_PROGRESS, estimated_effort=10, complexity='MEDIUM', progress=90,
+                             deadline=date.today() + timedelta(days=2))
+        # 10 * 0.1 * 1.0 * 1.5 = 1.5
+        self.assertEqual(task_load(t_almost_done), 1.5)
+
+    def test_calculate_capacity_signals_and_thresholds(self):
+        # Fresh member with AVAILABLE signal
+        member = Member.objects.create(team=self.team, name='CapacityTester', email='captester@example.com')
+        CapacitySignal.objects.create(member=member, level='AVAILABLE')
+
+        # 1. AVAILABLE fit: projected < 15 hours
+        eval_task = Task.objects.create(project=self.project, title='Eval 1', estimated_effort=10,
+                                        complexity='MEDIUM', progress=0,
+                                        deadline=date.today() + timedelta(days=14))
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'AVAILABLE')
+        self.assertEqual(cap['score'], 2.0)
+        self.assertEqual(cap['current_hours'], 0.0)
+        self.assertEqual(cap['projected_hours'], 10.0)
+
+        # 2. BALANCED fit: 15 <= projected < 30 hours
+        t_active1 = Task.objects.create(project=self.project, title='Active 1', estimated_effort=10,
+                                        complexity='MEDIUM', progress=0,
+                                        deadline=date.today() + timedelta(days=14))
+        Assignment.objects.create(task=t_active1, member=member, reason='work')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'BALANCED')
+        self.assertEqual(cap['score'], 1.5)
+        self.assertEqual(cap['current_hours'], 10.0)
+        self.assertEqual(cap['projected_hours'], 20.0)
+
+        # 3. NEAR_CAPACITY fit: 30 <= projected < 40 hours
+        t_active2 = Task.objects.create(project=self.project, title='Active 2', estimated_effort=12,
+                                        complexity='MEDIUM', progress=0,
+                                        deadline=date.today() + timedelta(days=14))
+        Assignment.objects.create(task=t_active2, member=member, reason='work')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'NEAR_CAPACITY')
+        self.assertEqual(cap['score'], 0.8)
+        self.assertEqual(cap['current_hours'], 22.0)
+        self.assertEqual(cap['projected_hours'], 32.0)
+
+        # 4. OVER_CAPACITY fit: projected >= 40 hours
+        t_active3 = Task.objects.create(project=self.project, title='Active 3', estimated_effort=10,
+                                        complexity='MEDIUM', progress=0,
+                                        deadline=date.today() + timedelta(days=14))
+        Assignment.objects.create(task=t_active3, member=member, reason='work')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'OVER_CAPACITY')
+        self.assertEqual(cap['score'], 0.0)
+        self.assertEqual(cap['current_hours'], 32.0)
+        self.assertEqual(cap['projected_hours'], 42.0)
+
+        # 5. Signal Floor: Self-reported OVER_CAPACITY is capped at NEAR_CAPACITY floor
+        # Clear assignments so system_fit is AVAILABLE (projected=10.0)
+        member.assignments.all().delete()
+        CapacitySignal.objects.create(member=member, level='OVER_CAPACITY')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'NEAR_CAPACITY')
+        self.assertEqual(cap['score'], 0.8)
+        self.assertEqual(cap['signal_level'], 'OVER_CAPACITY')
+
+        # 6. Signal Floor: Self-reported NEAR_CAPACITY elevates AVAILABLE system_fit
+        CapacitySignal.objects.create(member=member, level='NEAR_CAPACITY')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'NEAR_CAPACITY')
+        self.assertEqual(cap['score'], 0.8)
+
+        # 7. Signal Floor: Self-reported BALANCED elevates AVAILABLE system_fit
+        CapacitySignal.objects.create(member=member, level='BALANCED')
+        cap = AdaptiveEngine.calculate_capacity(member, eval_task)
+        self.assertEqual(cap['fit'], 'BALANCED')
+        self.assertEqual(cap['score'], 1.5)
