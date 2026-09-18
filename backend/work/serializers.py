@@ -14,10 +14,15 @@ class TaskSerializer(serializers.ModelSerializer):
         model = Task
         fields = [
             'id', 'project', 'title', 'description', 'required_skills',
-            'complexity', 'estimated_effort', 'deadline', 'access_requirements',
+            'complexity', 'estimated_effort', 'progress', 'deadline', 'access_requirements',
             'status', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_progress(self, value):
+        if value > 100:
+            raise serializers.ValidationError('Progress must be between 0 and 100.')
+        return value
 
 
 class AssignmentSerializer(serializers.ModelSerializer):

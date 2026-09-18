@@ -36,6 +36,7 @@ class Task(models.Model):
     required_skills = models.JSONField(default=list)  # list of str
     complexity = models.CharField(max_length=10, choices=TaskComplexity.choices, default=TaskComplexity.MEDIUM)
     estimated_effort = models.IntegerField(help_text='Hours')
+    progress = models.PositiveSmallIntegerField(default=0, help_text='Percent complete (0-100)')
     deadline = models.DateField(null=True, blank=True)
     access_requirements = models.JSONField(default=list)  # list of str e.g. ["Flexible Hours", "Remote"]
     status = models.CharField(max_length=20, choices=TaskStatus.choices, default=TaskStatus.PENDING)

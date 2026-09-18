@@ -2185,6 +2185,12 @@ components:
           minimum: -9223372036854775808
           format: int64
           description: Hours
+        progress:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+          description: Percent complete (0-100)
         deadline:
           type: string
           format: date
@@ -2218,6 +2224,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        access_support: {}
     Project:
       type: object
       properties:
@@ -2303,6 +2310,12 @@ components:
           minimum: -9223372036854775808
           format: int64
           description: Hours
+        progress:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+          description: Percent complete (0-100)
         deadline:
           type: string
           format: date
@@ -2346,6 +2359,12 @@ components:
           minimum: -9223372036854775808
           format: int64
           description: Hours
+        progress:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+          description: Percent complete (0-100)
         deadline:
           type: string
           format: date
@@ -2460,6 +2479,7 @@ components:
         name:
           type: string
           maxLength: 255
+        access_support: {}
         created_at:
           type: string
           format: date-time
@@ -2475,6 +2495,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        access_support: {}
       required:
       - name
   securitySchemes:

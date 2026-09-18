@@ -53,12 +53,12 @@ python manage.py runserver
 
 ## Adaptive Engine
 
-Deterministik scoring (0-6):
-- **Capability Fit** (0-2): Strong/Partial/Limited based on skills match
-- **Capacity Fit** (0-2): Available/Balanced/Near/Over based on workload + signal
-- **Access Readiness** (0-2): Ready/Needs Support/Unresolved based on requirements match
+Deterministic decision support:
+- **Capability Fit**: required skills, experience, and similar completed tasks.
+- **Capacity Fit**: remaining effort weighted by complexity and deadline, plus employee signal.
+- **Access Readiness**: task needs versus member preferences and workspace support.
 
-Engine returns ranked candidates with evidence + workload impact visualization.
+Candidates must meet minimum skill and access requirements before ranking by sustainable capacity. The engine returns evidence, workload impact, review flags, and saved re-analysis snapshots after work or capacity changes. It never assigns automatically. Thresholds are demo heuristics; see `../docs/03-ADAPTIVE-ENGINE.md`.
 
 ## Demo Data
 

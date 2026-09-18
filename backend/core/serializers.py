@@ -5,7 +5,7 @@ from core.models import Workspace, Team, Member, WorkProfile, CapacitySignal
 class WorkspaceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Workspace
-        fields = ['id', 'name', 'created_at']
+        fields = ['id', 'name', 'access_support', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 

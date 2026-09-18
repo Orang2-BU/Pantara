@@ -1,238 +1,177 @@
-"""
-Deterministic Adaptive Engine for Pantara-MindCraft.
-Calculates 3 dimensions:
-1. Capability Fit (0-2) -> Strong / Partial / Limited
-2. Capacity Fit (0-2) -> Available / Balanced / Near Capacity / Over Capacity
-3. Access Readiness (0-2) -> Ready / Needs Support / Unresolved
+"""Deterministic assignment support; thresholds are demo heuristics."""
 
-Candidate Score = Capability Fit + Capacity Fit + Access Readiness
-"""
-from typing import List, Dict, Any
-from core.models import Member, WorkProfile, CapacitySignal, CapacityLevel
-from work.models import Task, TaskStatus
-from adaptive.models import CapabilityFit, CapacityFit, AccessReadiness
+from datetime import date
+
+from core.models import CapacityLevel, WorkProfile
+from work.models import Assignment, TaskStatus
+from adaptive.models import AccessReadiness, AdaptiveAnalysis, CapabilityFit, CapacityFit
+
+
+def task_load(task):
+    if task.status == TaskStatus.COMPLETED:
+        return 0.0
+    days = (task.deadline - date.today()).days if task.deadline else None
+    deadline_factor = 1.5 if days is not None and days < 3 else 1.2 if days is not None and days <= 7 else 1.0
+    complexity_factor = {'LOW': 0.8, 'MEDIUM': 1.0, 'HIGH': 1.3}[task.complexity]
+    return round(task.estimated_effort * (1 - task.progress / 100) * complexity_factor * deadline_factor, 2)
 
 
 class AdaptiveEngine:
-
     @staticmethod
-    def calculate_capability(task: Task, profile: WorkProfile) -> Dict[str, Any]:
-        req_skills = [s.lower() for s in task.required_skills]
-        if not req_skills:
-            return {
-                'fit': CapabilityFit.STRONG,
-                'score': 2.0,
-                'matched_skills': [],
-                'missing_skills': [],
-                'evidence': 'No specific required skills specified.'
-            }
-
-        member_skills = [s.lower() for s in profile.skills]
-        matched = [s for s in req_skills if s in member_skills]
-        missing = [s for s in req_skills if s not in member_skills]
-
-        match_ratio = len(matched) / len(req_skills) if req_skills else 1.0
-
-        # Check experience evidence
-        exp_skills = [e.get('skill', '').lower() for e in profile.experience if isinstance(e, dict)]
-        has_prior_exp = any(s in exp_skills for s in matched)
-
-        if match_ratio == 1.0:
-            fit = CapabilityFit.STRONG
-            score = 2.0
-            evidence = f"Memiliki seluruh keahlian yang dibutuhkan ({', '.join(matched)})."
-        elif match_ratio >= 0.5:
-            fit = CapabilityFit.PARTIAL
-            score = 1.0
-            evidence = f"Memiliki sebagian keahlian ({', '.join(matched)}), butuh adaptasi pada ({', '.join(missing)})."
-        else:
-            fit = CapabilityFit.LIMITED
-            score = 0.0
-            evidence = f"Keahlian belum sesuai ({', '.join(missing)})."
-
-        if has_prior_exp:
-            evidence += " Memiliki riwayat pengerjaan serupa sebelumnya."
-
+    def calculate_capability(task, profile):
+        required = {skill.casefold() for skill in task.required_skills}
+        skills = {skill.casefold() for skill in profile.skills}
+        matched = sorted(required & skills)
+        missing = sorted(required - skills)
+        ratio = len(matched) / len(required) if required else 1.0
+        experience = {e.get('skill', '').casefold() for e in profile.experience if isinstance(e, dict)}
+        relevant_experience = sorted(required & experience)
+        previous = Assignment.objects.filter(
+            member=profile.member, task__status=TaskStatus.COMPLETED,
+            task__completion_evidence__isnull=False,
+        ).select_related('task').distinct()
+        similar = sum(bool(required & {s.casefold() for s in a.task.required_skills}) for a in previous)
+        fit = CapabilityFit.STRONG if ratio == 1 else CapabilityFit.PARTIAL if ratio >= 0.5 else CapabilityFit.LIMITED
         return {
-            'fit': fit,
-            'score': score,
-            'matched_skills': matched,
-            'missing_skills': missing,
-            'evidence': evidence
+            'fit': fit, 'score': 2.0 if ratio == 1 else 1.0 if ratio >= 0.5 else 0.0,
+            'required_match': round(ratio, 2), 'matched_skills': matched,
+            'missing_skills': missing, 'relevant_experience': relevant_experience,
+            'similar_completed_tasks': similar,
+            'evidence': f'{len(matched)}/{len(required)} required skills matched; {len(relevant_experience)} experience records; {similar} relevant completed tasks.',
+            'reason_codes': (['REQUIRED_SKILLS_MATCH'] if not missing else ['MISSING_REQUIRED_SKILLS'])
+                            + (['RELEVANT_EXPERIENCE'] if relevant_experience else [])
+                            + (['SIMILAR_TASK_HISTORY'] if similar else []),
         }
 
     @staticmethod
-    def calculate_capacity(member: Member, task: Task) -> Dict[str, Any]:
-        # Active assignments
-        active_assignments = member.assignments.filter(
-            task__status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS]
-        )
-        current_hours = sum(a.task.estimated_effort for a in active_assignments)
-        projected_hours = current_hours + task.estimated_effort
-
-        # Latest capacity signal
-        latest_signal = member.capacity_signals.order_by('-created_at').first()
-        signal_level = latest_signal.level if latest_signal else CapacityLevel.BALANCED
-
-        # Scoring heuristics based on hours & signal
-        # Baseline capacity: ~40h max standard workload
-        if signal_level == CapacityLevel.OVER_CAPACITY or current_hours >= 35:
-            fit = CapacityFit.OVER_CAPACITY
-            score = 0.0
-            evidence = f"Kapasitas penuh (Active: {current_hours}h, Signal: {signal_level}). Menambah beban berisiko overload."
-        elif signal_level == CapacityLevel.NEAR_CAPACITY or current_hours >= 25:
-            fit = CapacityFit.NEAR_CAPACITY
-            score = 0.8
-            evidence = f"Mendekati kapasitas maksimal (Active: {current_hours}h). Masih memungkinkan untuk task prioritas."
-        elif signal_level == CapacityLevel.BALANCED or current_hours >= 15:
-            fit = CapacityFit.BALANCED
-            score = 1.5
-            evidence = f"Beban kerja seimbang (Active: {current_hours}h). Kapasitas cukup untuk task baru."
-        else:
-            fit = CapacityFit.AVAILABLE
-            score = 2.0
-            evidence = f"Kapasitas sangat tersedia (Active: {current_hours}h, Signal: {signal_level})."
-
+    def calculate_capacity(member, task):
+        assignments = member.assignments.filter(
+            task__status__in=[TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]
+        ).select_related('task')
+        active_tasks = {a.task_id: a.task for a in assignments if a.task_id != task.id}
+        current = round(sum(task_load(t) for t in active_tasks.values()), 2)
+        projected = round(current + task_load(task), 2)
+        signal = member.latest_capacity_signal
+        # ponytail: 40 weighted hours is a demo baseline; calibrate per team with observed workload.
+        system_fit = (CapacityFit.OVER_CAPACITY if projected >= 40 else
+                      CapacityFit.NEAR_CAPACITY if projected >= 30 else
+                      CapacityFit.BALANCED if projected >= 15 else CapacityFit.AVAILABLE)
+        levels = list(CapacityLevel.values)
+        # Self-report changes priority and requires review, without becoming an automatic zero.
+        signal_floor = CapacityLevel.NEAR_CAPACITY if signal == CapacityLevel.OVER_CAPACITY else signal
+        fit = levels[max(levels.index(system_fit), levels.index(signal_floor))]
+        score = {CapacityFit.AVAILABLE: 2.0, CapacityFit.BALANCED: 1.5,
+                 CapacityFit.NEAR_CAPACITY: 0.8, CapacityFit.OVER_CAPACITY: 0.0}[fit]
         return {
-            'fit': fit,
-            'score': score,
-            'current_hours': current_hours,
-            'projected_hours': projected_hours,
-            'signal_level': signal_level,
-            'active_tasks_count': active_assignments.count(),
-            'evidence': evidence
+            'fit': fit, 'score': score, 'current_hours': current,
+            'projected_hours': projected, 'signal_level': signal,
+            'active_tasks_count': len(active_tasks),
+            'evidence': f'{len(active_tasks)} active tasks; {current} weighted hours now, {projected} if assigned; self-report: {signal}.',
+            'reason_codes': ['CAPACITY_' + fit],
         }
 
     @staticmethod
-    def calculate_access(task: Task, profile: WorkProfile) -> Dict[str, Any]:
-        req_access = [a.lower() for a in task.access_requirements]
-        if not req_access:
-            return {
-                'readiness': AccessReadiness.READY,
-                'score': 2.0,
-                'matched_preferences': [],
-                'unmet_preferences': [],
-                'evidence': 'Tidak ada persyaratan akses khusus untuk task ini.'
-            }
-
-        member_prefs = [p.lower() for p in profile.access_preferences]
-        matched = [a for a in req_access if a in member_prefs]
-        unmet = [a for a in req_access if a not in member_prefs]
-
-        if not unmet:
-            readiness = AccessReadiness.READY
-            score = 2.0
-            evidence = f"Kebutuhan akses ({', '.join(req_access)}) terpenuhi oleh preferensi kerja."
-        elif matched:
-            readiness = AccessReadiness.NEEDS_SUPPORT
-            score = 1.0
-            evidence = f"Sebagian kebutuhan akses terpenuhi, memerlukan penyesuaian untuk: ({', '.join(unmet)})."
-        else:
-            readiness = AccessReadiness.UNRESOLVED
-            score = 0.0
-            evidence = f"Kebutuhan akses belum terkonfirmasi ({', '.join(unmet)}). Perlu klarifikasi sebelum assignment."
-
+    def calculate_access(task, profile):
+        required = {item.casefold() for item in task.access_requirements}
+        preferences = {item.casefold() for item in profile.access_preferences}
+        support = {item.casefold() for item in task.project.workspace.access_support}
+        ready = sorted(required & (preferences | support))
+        unmet = sorted(required - (preferences | support))
+        readiness = (AccessReadiness.READY if not unmet else
+                     AccessReadiness.NEEDS_SUPPORT if ready else AccessReadiness.UNRESOLVED)
         return {
-            'readiness': readiness,
-            'score': score,
-            'matched_preferences': matched,
-            'unmet_preferences': unmet,
-            'evidence': evidence
+            'readiness': readiness, 'score': 2.0 if readiness == AccessReadiness.READY else 1.0 if ready else 0.0,
+            'matched_preferences': sorted(required & preferences),
+            'workplace_support': sorted(required & support), 'unmet_preferences': unmet,
+            'evidence': f'Available: {", ".join(ready) or "none"}; needs review: {", ".join(unmet) or "none"}.',
+            'reason_codes': ['ACCESS_READY' if not unmet else 'ACCESS_REVIEW_REQUIRED'],
         }
 
     @classmethod
-    def analyze_task(cls, task: Task) -> Dict[str, Any]:
-        team = task.project.team
-        members = team.members.all()
-
-        candidates_data = []
-
-        for member in members:
-            # Ensure work profile exists
-            profile, _ = WorkProfile.objects.get_or_create(member=member)
-
-            capability = cls.calculate_capability(task, profile)
-            capacity = cls.calculate_capacity(member, task)
-            access = cls.calculate_access(task, profile)
-
-            total_score = round(capability['score'] + capacity['score'] + access['score'], 2)
-
-            candidates_data.append({
-                'member_id': str(member.id),
-                'member_name': member.name,
-                'role': member.role,
-                'total_score': total_score,
-                'capability': capability,
-                'capacity': capacity,
-                'access': access,
-                'is_eligible': access['readiness'] != AccessReadiness.UNRESOLVED
-            })
-
-        # Sort by total score descending
-        candidates_data.sort(key=lambda x: (x['is_eligible'], x['total_score']), reverse=True)
-
-        if not candidates_data:
-            return {
-                'candidates': [],
-                'recommendation': {'reason': 'Tidak ada anggota tim yang terdaftar.'},
-                'evidence': {},
-                'workload_impact': {}
+    def analyze_task(cls, task):
+        candidates = []
+        for member in task.project.team.members.all():
+            profile = WorkProfile.objects.filter(member=member).first()
+            capability = cls.calculate_capability(task, profile) if profile else {
+                'fit': CapabilityFit.LIMITED, 'score': 0.0, 'required_match': 0.0,
+                'matched_skills': [], 'missing_skills': task.required_skills,
+                'relevant_experience': [], 'similar_completed_tasks': 0,
+                'evidence': 'Work profile missing.',
+                'reason_codes': ['PROFILE_MISSING'],
             }
-
-        top_candidate = candidates_data[0]
-        alternatives = candidates_data[1:3] if len(candidates_data) > 1 else []
-
-        # Generate readable recommendation explanation
-        reasons = []
-        if top_candidate['capability']['fit'] == CapabilityFit.STRONG:
-            reasons.append("memiliki keahlian yang sangat cocok")
-        elif top_candidate['capability']['fit'] == CapabilityFit.PARTIAL:
-            reasons.append("memiliki kemampuan yang cukup dengan potensi adaptasi")
-
-        if top_candidate['capacity']['fit'] in [CapacityFit.AVAILABLE, CapacityFit.BALANCED]:
-            reasons.append("memiliki kapasitas beban kerja yang sehat dan tersedia")
-        else:
-            reasons.append("sedang dalam beban kerja aktif")
-
-        if top_candidate['access']['readiness'] == AccessReadiness.READY:
-            reasons.append("kondisi akses kerja sudah selaras")
-
-        recommendation_text = f"{top_candidate['member_name']} direkomendasikan karena " + ", ".join(reasons) + "."
-
-        recommendation = {
-            'recommended_member_id': top_candidate['member_id'],
-            'recommended_member_name': top_candidate['member_name'],
-            'score': top_candidate['total_score'],
-            'reason': recommendation_text,
-            'alternatives': [
-                {
-                    'member_id': alt['member_id'],
-                    'member_name': alt['member_name'],
-                    'score': alt['total_score'],
-                    'summary': f"{alt['capability']['fit']} capability, {alt['capacity']['fit']} capacity"
-                }
-                for alt in alternatives
-            ]
-        }
-
-        workload_impact = {
-            c['member_name']: {
+            capacity = cls.calculate_capacity(member, task)
+            access = cls.calculate_access(task, profile) if profile else {
+                'readiness': AccessReadiness.UNRESOLVED, 'score': 0.0,
+                'matched_preferences': [], 'workplace_support': [],
+                'unmet_preferences': task.access_requirements,
+                'evidence': 'Work profile missing.', 'reason_codes': ['PROFILE_MISSING'],
+            }
+            viable = capability['required_match'] >= 0.5 and access['readiness'] == AccessReadiness.READY
+            candidates.append({
+                'member_id': str(member.id), 'member_name': member.name, 'role': member.role,
+                'total_score': round(capability['score'] + capacity['score'], 2),
+                'capability': capability, 'capacity': capacity, 'access': access,
+                'is_eligible': viable,
+                'review_required': not viable or capacity['fit'] == CapacityFit.OVER_CAPACITY
+                                   or capacity['signal_level'] == CapacityLevel.OVER_CAPACITY,
+            })
+        candidates.sort(key=lambda c: (
+            c['is_eligible'], c['capacity']['fit'] != CapacityFit.OVER_CAPACITY,
+            c['capacity']['score'], c['capability']['score'], c['capability']['similar_completed_tasks'],
+            len(c['capability']['relevant_experience'])
+        ), reverse=True)
+        viable = next((c for c in candidates if c['is_eligible']), None)
+        recommendation = {'reason': 'No eligible candidate; review required skills and access support.'}
+        if viable:
+            recommendation = {
+                'recommended_member_id': viable['member_id'],
+                'recommended_member_name': viable['member_name'],
+                'score': viable['total_score'], 'review_required': viable['review_required'],
+                'reason_codes': viable['capability']['reason_codes'] + viable['capacity']['reason_codes'] + viable['access']['reason_codes'],
+                'reason': f"{viable['member_name']}: {viable['capability']['evidence']} {viable['capacity']['evidence']} {viable['access']['evidence']}",
+                'alternatives': [
+                    {'member_id': c['member_id'], 'member_name': c['member_name'],
+                     'review_required': c['review_required'], 'reason_codes':
+                     c['capability']['reason_codes'] + c['capacity']['reason_codes'] + c['access']['reason_codes']}
+                    for c in candidates if c is not viable
+                ],
+            }
+        return {
+            'candidates': candidates, 'recommendation': recommendation,
+            'evidence': {'task_title': task.title, 'complexity': task.complexity,
+                         'estimated_effort': task.estimated_effort,
+                         'required_skills': task.required_skills,
+                         'access_requirements': task.access_requirements,
+                         'open_blockers': list(task.blockers.exclude(status='RESOLVED').values_list('type', flat=True))},
+            'workload_impact': {c['member_id']: {
                 'before_hours': c['capacity']['current_hours'],
                 'after_hours': c['capacity']['projected_hours'],
                 'signal': c['capacity']['signal_level']
-            }
-            for c in candidates_data
+            } for c in candidates},
         }
 
-        return {
-            'candidates': candidates_data,
-            'recommendation': recommendation,
-            'evidence': {
-                'task_title': task.title,
-                'complexity': task.complexity,
-                'estimated_effort': task.estimated_effort,
-                'required_skills': task.required_skills,
-                'access_requirements': task.access_requirements,
-            },
-            'workload_impact': workload_impact
-        }
+    @classmethod
+    def save_analysis(cls, task, trigger='manual'):
+        result = cls.analyze_task(task)
+        previous = task.analyses.first()
+        old_id = previous.recommendation.get('recommended_member_id') if previous else None
+        new_id = result['recommendation'].get('recommended_member_id')
+        result['recommendation']['trigger'] = trigger
+        result['recommendation']['changed_from_previous'] = previous is not None and old_id != new_id
+        if previous and previous.candidates == result['candidates'] and previous.evidence == result['evidence']:
+            return previous
+        if previous and trigger != 'manual' and (
+            old_id != new_id or result['evidence']['open_blockers']
+            or result['recommendation'].get('review_required')
+        ):
+            result['recommendation']['intervention'] = 'REVIEW_REDISTRIBUTION'
+        return AdaptiveAnalysis.objects.create(task=task, **result)
+
+    @classmethod
+    def refresh_team(cls, team, trigger):
+        """Refresh open work; changed recommendations are review prompts, not assignments."""
+        from work.models import Task
+        for task in Task.objects.filter(project__team=team, status__in=[
+            TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED
+        ]):
+            cls.save_analysis(task, trigger)
